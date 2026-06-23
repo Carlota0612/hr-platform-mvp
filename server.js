@@ -117,4 +117,14 @@ app.post('/api/ai/talent-memo/:id', requireAuth, async (req,res)=>{
 });
 
 app.get('*', (req,res)=> res.sendFile(path.join(__dirname, 'public', 'index.html')));
-initDb().then(()=> app.listen(PORT, ()=> console.log(`HR platform running on ${PORT}`))).catch(err=>{ console.error(err); process.exit(1); });
+
+initDb()
+  .then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`HR platform running on ${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('Startup error:', err);
+    process.exit(1);
+  });
