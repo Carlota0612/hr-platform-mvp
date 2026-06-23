@@ -51,3 +51,4 @@ This MVP uses SQLite. On Render free web services, local filesystem data may not
 - Searchable people directory
 - Org chart from manager relationships
 - Basic generated talent memo from stored records
+
