@@ -11,6 +11,6 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: ADMIN_EMAIL
-        value: admin@example.com
+        value: carlota.moron.ortiz@h-partners.com
       - key: ADMIN_PASSWORD
-        value: admin123
+        value: CarOrt2026!!
