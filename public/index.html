@@ -9,10 +9,10 @@
 <body>
   <div id="login" class="login-card hidden">
     <h1>PeopleOS</h1><p>Internal HR and talent platform</p>
-    <input id="email" placeholder="Email" value="admin@example.com" />
-    <input id="password" placeholder="Password" type="password" value="admin123" />
+    <input id="email" placeholder="Email" />
+    <input id="password" placeholder="Password" type="password" />
     <button onclick="login()">Sign in</button>
-    <small>Default login: admin@example.com / admin123. Change this in Render env vars.</small>
+    <small>Use the ADMIN_EMAIL and ADMIN_PASSWORD configured in Render.</small>
   </div>
 
   <div id="app" class="hidden shell">
@@ -22,6 +22,8 @@
       <button onclick="show('directory')">People Directory</button>
       <button onclick="show('teams')">Teams</button>
       <button onclick="show('employees')">Employees</button>
+      <button onclick="show('projects')">Projects</button>
+      <button onclick="show('tasks')">Tasks</button>
       <button onclick="show('achievements')">Achievements</button>
       <button onclick="show('progression')">Career Progression</button>
       <button onclick="show('actions')">Talent Action Plan</button>
@@ -33,7 +35,9 @@
       <section id="dashboard" class="page"><h1>Dashboard</h1><div id="metrics" class="cards"></div></section>
       <section id="directory" class="page hidden"><h1>People Directory</h1><input id="search" placeholder="Search name, skill, team, title..." oninput="loadDirectory()"/><div id="directoryRows" class="grid"></div></section>
       <section id="teams" class="page hidden"><h1>Teams</h1><div id="teamsForm"></div><table id="teamsTable"></table></section>
-      <section id="employees" class="page hidden"><h1>Employees</h1><div id="employeesForm"></div><table id="employeesTable"></table></section>
+      <section id="employees" class="page hidden"><h1>Employees</h1><div class="import-box"><h3>Import employees from Excel/CSV</h3><p>Accepted columns: first_name, last_name, name, email, title, team, manager, location, start_date, level, status, skills, bio.</p><input id="employeeImportFile" type="file" accept=".xlsx,.xls,.csv" /><button onclick="importEmployees()">Upload employees</button><pre id="importResult"></pre></div><div id="employeesForm"></div><table id="employeesTable"></table></section>
+      <section id="projects" class="page hidden"><h1>Projects</h1><div id="projectsForm"></div><table id="projectsTable"></table></section>
+      <section id="tasks" class="page hidden"><h1>Tasks</h1><div id="tasksForm"></div><table id="tasksTable"></table></section>
       <section id="achievements" class="page hidden"><h1>Employee Achievements</h1><div id="achievementsForm"></div><table id="achievementsTable"></table></section>
       <section id="progression" class="page hidden"><h1>Career Progression</h1><div id="career_progressionForm"></div><table id="career_progressionTable"></table></section>
       <section id="actions" class="page hidden"><h1>Talent Action Plan</h1><div id="action_plansForm"></div><table id="action_plansTable"></table></section>
