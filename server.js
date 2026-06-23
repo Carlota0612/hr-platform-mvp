@@ -5,6 +5,8 @@ const sqlite3 = require('sqlite3').verbose();
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
+const multer = require('multer');
+const XLSX = require('xlsx');
 
 const app = express();
 app.set('trust proxy', 1);
@@ -22,12 +24,7 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'change-me-in-render-env',
   resave: false,
   saveUninitialized: false,
-  cookie: {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: false,
-    maxAge: 1000 * 60 * 60 * 8
-  }
+  cookie: { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 1000*60*60*8 }
 }));
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -54,8 +51,16 @@ async function initDb() {
   await run(`CREATE TABLE IF NOT EXISTS career_progression (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, from_role TEXT, to_role TEXT, progression_date TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS action_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, objective TEXT, owner TEXT, due_date TEXT, status TEXT DEFAULT 'Open', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS development_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, skill_area TEXT NOT NULL, development_goal TEXT, learning_actions TEXT, target_date TEXT, status TEXT DEFAULT 'In progress', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
-  const admin = await get('SELECT id FROM users WHERE email=?', [process.env.ADMIN_EMAIL || 'admin@example.com']);
-  if (!admin) await run('INSERT INTO users (name,email,role,password_hash) VALUES (?,?,?,?)', ['Admin', process.env.ADMIN_EMAIL || 'admin@example.com', 'admin', hashPassword(process.env.ADMIN_PASSWORD || 'admin123')]);
+  await run(`CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_employee_id INTEGER, team_id INTEGER, status TEXT DEFAULT 'Planning', start_date TEXT, end_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(owner_employee_id) REFERENCES employees(id), FOREIGN KEY(team_id) REFERENCES teams(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, assigned_employee_id INTEGER, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'Open', priority TEXT DEFAULT 'Medium', due_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL, FOREIGN KEY(assigned_employee_id) REFERENCES employees(id) ON DELETE SET NULL)`);
+  const adminEmail = process.env.ADMIN_EMAIL || 'carlota.moron.ortiz@h-partners.com';
+  const adminPassword = process.env.ADMIN_PASSWORD || 'CHANGE_ME_IN_RENDER';
+  const existingAdmin = await get('SELECT id FROM users WHERE role=?', ['admin']);
+  if (existingAdmin) {
+    await run('UPDATE users SET email=?, password_hash=? WHERE id=?', [adminEmail, hashPassword(adminPassword), existingAdmin.id]);
+  } else {
+    await run('INSERT INTO users (name,email,role,password_hash) VALUES (?,?,?,?)', ['Admin', adminEmail, 'admin', hashPassword(adminPassword)]);
+  }
   const cnt = await get('SELECT COUNT(*) as n FROM teams');
   if (cnt.n === 0) {
     await run('INSERT INTO teams (name,description) VALUES (?,?)', ['Research', 'Core research team']);
@@ -70,10 +75,10 @@ app.post('/api/logout', (req,res)=> req.session.destroy(()=>res.json({ ok:true }
 app.get('/api/me', (req,res)=> res.json({ user:req.session.user || null }));
 
 app.get('/api/dashboard', requireAuth, async (req,res)=>{
-  const [employees, teams, openActions, devPlans] = await Promise.all([
-    get('SELECT COUNT(*) n FROM employees WHERE status="Active"'), get('SELECT COUNT(*) n FROM teams'), get('SELECT COUNT(*) n FROM action_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM development_plans WHERE status != "Done"')
+  const [employees, teams, openActions, devPlans, projects, openTasks] = await Promise.all([
+    get('SELECT COUNT(*) n FROM employees WHERE status="Active"'), get('SELECT COUNT(*) n FROM teams'), get('SELECT COUNT(*) n FROM action_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM development_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM projects'), get('SELECT COUNT(*) n FROM tasks WHERE status != "Done"')
   ]);
-  res.json({ employees: employees.n, teams: teams.n, openActions: openActions.n, developmentPlans: devPlans.n });
+  res.json({ employees: employees.n, teams: teams.n, openActions: openActions.n, developmentPlans: devPlans.n, projects: projects.n, openTasks: openTasks.n });
 });
 
 function crud(table, fields) {
@@ -88,6 +93,99 @@ crud('achievements', ['employee_id','title','description','achievement_date','ca
 crud('career_progression', ['employee_id','from_role','to_role','progression_date','notes']);
 crud('action_plans', ['employee_id','title','objective','owner','due_date','status']);
 crud('development_plans', ['employee_id','skill_area','development_goal','learning_actions','target_date','status']);
+crud('projects', ['name','description','owner_employee_id','team_id','status','start_date','end_date']);
+crud('tasks', ['project_id','assigned_employee_id','title','description','status','priority','due_date']);
+
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+
+function normalizeHeader(h) {
+  return String(h || '').trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+}
+function pick(row, names) {
+  for (const n of names) {
+    if (row[n] !== undefined && row[n] !== null && String(row[n]).trim() !== '') return String(row[n]).trim();
+  }
+  return '';
+}
+async function getOrCreateTeam(name) {
+  if (!name) return null;
+  let team = await get('SELECT id FROM teams WHERE lower(name)=lower(?)', [name]);
+  if (team) return team.id;
+  const r = await run('INSERT INTO teams (name,description) VALUES (?,?)', [name, 'Created from employee import']);
+  return r.lastID;
+}
+async function findManagerId(managerText) {
+  if (!managerText) return null;
+  const text = String(managerText).trim();
+  let manager = await get('SELECT id FROM employees WHERE lower(email)=lower(?)', [text]);
+  if (manager) return manager.id;
+  const parts = text.split(/\s+/);
+  if (parts.length >= 2) {
+    manager = await get('SELECT id FROM employees WHERE lower(first_name)=lower(?) AND lower(last_name)=lower(?)', [parts[0], parts.slice(1).join(' ')]);
+    if (manager) return manager.id;
+  }
+  return null;
+}
+
+app.post('/api/import/employees', requireAuth, upload.single('file'), async (req,res)=>{
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: false });
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' }).map(raw => {
+    const out = {};
+    for (const [k,v] of Object.entries(raw)) out[normalizeHeader(k)] = v;
+    return out;
+  });
+  let created = 0, updated = 0, skipped = 0;
+  const errors = [];
+  for (let i=0; i<rows.length; i++) {
+    const row = rows[i];
+    try {
+      const fullName = pick(row, ['name','full_name','employee_name']);
+      let first = pick(row, ['first_name','firstname','first']);
+      let last = pick(row, ['last_name','lastname','surname','last']);
+      if ((!first || !last) && fullName) {
+        const parts = fullName.split(/\s+/);
+        first = first || parts[0] || '';
+        last = last || parts.slice(1).join(' ') || '';
+      }
+      const email = pick(row, ['email','work_email','employee_email']);
+      if (!first || !last || !email) { skipped++; errors.push(`Row ${i+2}: first name, last name and email are required`); continue; }
+      const teamName = pick(row, ['team','department','org','organization']);
+      const teamId = await getOrCreateTeam(teamName);
+      const managerText = pick(row, ['manager','manager_email','line_manager']);
+      const managerId = await findManagerId(managerText);
+      const values = {
+        first_name:first,
+        last_name:last,
+        title:pick(row, ['title','job_title','role','position']),
+        email,
+        location:pick(row, ['location','country','site']),
+        manager_id:managerId,
+        team_id:teamId,
+        start_date:pick(row, ['start_date','startdate','hire_date','join_date']),
+        level:pick(row, ['level','grade']),
+        status:pick(row, ['status']) || 'Active',
+        skills:pick(row, ['skills','expertise','competencies']),
+        bio:pick(row, ['bio','summary','notes'])
+      };
+      const existing = await get('SELECT id FROM employees WHERE lower(email)=lower(?)', [email]);
+      if (existing) {
+        await run(`UPDATE employees SET first_name=?, last_name=?, title=?, location=?, manager_id=?, team_id=?, start_date=?, level=?, status=?, skills=?, bio=? WHERE id=?`,
+          [values.first_name,values.last_name,values.title,values.location,values.manager_id,values.team_id,values.start_date,values.level,values.status,values.skills,values.bio,existing.id]);
+        updated++;
+      } else {
+        await run(`INSERT INTO employees (first_name,last_name,title,email,location,manager_id,team_id,start_date,level,status,skills,bio) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+          [values.first_name,values.last_name,values.title,values.email,values.location,values.manager_id,values.team_id,values.start_date,values.level,values.status,values.skills,values.bio]);
+        created++;
+      }
+    } catch (err) {
+      skipped++; errors.push(`Row ${i+2}: ${err.message}`);
+    }
+  }
+  res.json({ created, updated, skipped, errors: errors.slice(0,20) });
+});
 
 app.get('/api/people-directory', requireAuth, async (req,res)=>{
   const q = `%${req.query.q || ''}%`;
@@ -118,12 +216,9 @@ app.post('/api/ai/talent-memo/:id', requireAuth, async (req,res)=>{
 });
 
 app.get('*', (req,res)=> res.sendFile(path.join(__dirname, 'public', 'index.html')));
-
 initDb()
   .then(() => {
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`HR platform running on ${PORT}`);
-    });
+    app.listen(PORT, '0.0.0.0', () => console.log(`HR platform running on ${PORT}`));
   })
   .catch(err => {
     console.error('Startup error:', err);
