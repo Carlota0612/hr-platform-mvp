@@ -16,17 +16,40 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 fs.mkdirSync(DATA_DIR, { recursive: true });
 const dbPath = path.join(DATA_DIR, 'hr.sqlite');
 const db = new sqlite3.Database(dbPath);
+const isProduction = process.env.NODE_ENV === 'production';
+const sessionSecret = process.env.SESSION_SECRET || (isProduction ? null : 'dev-only-change-me');
+if (!sessionSecret) {
+  throw new Error('SESSION_SECRET must be configured in production.');
+}
+const loginAttempts = new Map();
+
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  if (isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  next();
+});
 
 app.use(express.json({ limit: '2mb' }));
 app.use(express.urlencoded({ extended: true }));
 app.use(session({
   store: new SQLiteStore({ db: 'sessions.sqlite', dir: DATA_DIR }),
-  secret: process.env.SESSION_SECRET || 'change-me-in-render-env',
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: 'lax', secure: false, maxAge: 1000*60*60*8 }
+  cookie: { httpOnly: true, sameSite: 'strict', secure: isProduction, maxAge: 1000*60*60*8 }
 }));
 app.use(express.static(path.join(__dirname, 'public')));
+app.use((req, res, next) => {
+  if (!req.session.csrfToken) req.session.csrfToken = crypto.randomBytes(24).toString('hex');
+  if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || req.path === '/api/login') return next();
+  if (req.session.user && req.get('X-CSRF-Token') !== req.session.csrfToken) {
+    return res.status(403).json({ error: 'Invalid security token. Refresh the page and try again.' });
+  }
+  next();
+});
 
 function run(sql, params=[]) { return new Promise((res, rej)=> db.run(sql, params, function(err){ err ? rej(err) : res(this); })); }
 function all(sql, params=[]) { return new Promise((res, rej)=> db.all(sql, params, (err, rows)=> err ? rej(err) : res(rows))); }
@@ -40,19 +63,69 @@ function verifyPassword(password, stored) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(original, 'hex'));
 }
+async function ensureColumn(table, column, definition) {
+  const cols = await all(`PRAGMA table_info(${table})`);
+  if (!cols.some(c => c.name === column)) await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+async function seedDefaultSettings() {
+  const defaults = {
+    theme: JSON.stringify({ brand:'#7c3aed', brandDark:'#5b21b6', accent:'#c084fc', bg:'#f7f2ff', ink:'#24113f' }),
+    tabs: JSON.stringify({ dashboard:'Dashboard', directory:'People Directory', teams:'Teams', employees:'Employees', projects:'Projects', tasks:'Tasks', achievements:'Achievements', progression:'Career Progression', actions:'Talent Action Plan', development:'Talent Development', org:'Org Chart', hr:'HR Secure Info', settings:'Settings', users:'Users' }),
+    dashboardCards: JSON.stringify(['employees','teams','openActions','developmentPlans','projects','openTasks'])
+  };
+  for (const [key, value] of Object.entries(defaults)) {
+    await run('INSERT OR IGNORE INTO app_settings (key,value) VALUES (?,?)', [key, value]);
+  }
+}
+function normalizeRoles(value) {
+  const roles = Array.isArray(value) ? value : String(value || 'user').split(',');
+  const allowed = new Set(['user', 'manager', 'hr', 'admin']);
+  const clean = [...new Set(roles.map(r => String(r).trim().toLowerCase()).filter(r => allowed.has(r)))];
+  return clean.length ? clean : ['user'];
+}
+function rolesForUser(user) { return normalizeRoles(user?.roles || user?.role); }
+function primaryRole(roles) { return roles.includes('admin') ? 'admin' : roles.includes('hr') ? 'hr' : roles.includes('manager') ? 'manager' : 'user'; }
 function requireAuth(req, res, next) { if (!req.session.user) return res.status(401).json({ error: 'Not authenticated' }); next(); }
-function requireAdmin(req, res, next) { if (!req.session.user || req.session.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' }); next(); }
+function hasRole(req, role) { return rolesForUser(req.session.user).includes(role); }
+function requireAdmin(req, res, next) { if (!req.session.user || !hasRole(req, 'admin')) return res.status(403).json({ error: 'Admin only' }); next(); }
+function requireHr(req, res, next) { if (!req.session.user || !(hasRole(req, 'hr') || hasRole(req, 'admin'))) return res.status(403).json({ error: 'HR only' }); next(); }
+function isAdmin(req) { return hasRole(req, 'admin'); }
+function isManager(req) { return hasRole(req, 'manager'); }
+function isHr(req) { return hasRole(req, 'hr'); }
+function isUser(req) { return hasRole(req, 'user') || rolesForUser(req.session.user).length === 0; }
+async function auditLog(req, action, targetType, targetId = null, details = {}) {
+  await run('INSERT INTO audit_logs (user_id,user_email,action,target_type,target_id,details,ip,user_agent) VALUES (?,?,?,?,?,?,?,?)', [req.session.user?.id || null, req.session.user?.email || null, action, targetType, targetId, JSON.stringify(details), req.ip, req.get('user-agent') || '']);
+}
+async function currentEmployeeId(req) {
+  if (req.session.user?.employee_id) return req.session.user.employee_id;
+  const employee = await get('SELECT id FROM employees WHERE lower(email)=lower(?)', [req.session.user?.email || '']);
+  return employee?.id || null;
+}
+async function managedEmployeeIds(req) {
+  const managerId = await currentEmployeeId(req);
+  if (!managerId) return [];
+  const rows = await all('SELECT id FROM employees WHERE manager_id=?', [managerId]);
+  return rows.map(r => r.id);
+}
+function placeholders(values) { return values.map(() => '?').join(','); }
 
 async function initDb() {
-  await run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, role TEXT DEFAULT 'admin', password_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  await run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, role TEXT DEFAULT 'admin', employee_id INTEGER, password_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id))`);
   await run(`CREATE TABLE IF NOT EXISTS teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
-  await run(`CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT NOT NULL, last_name TEXT NOT NULL, title TEXT, email TEXT UNIQUE, location TEXT, manager_id INTEGER, team_id INTEGER, start_date TEXT, level TEXT, status TEXT DEFAULT 'Active', skills TEXT, bio TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(manager_id) REFERENCES employees(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT NOT NULL, last_name TEXT NOT NULL, title TEXT, email TEXT UNIQUE, location TEXT, manager_id INTEGER, team_id INTEGER, start_date TEXT, level TEXT, status TEXT DEFAULT 'Active', skills TEXT, bio TEXT, photo_url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(manager_id) REFERENCES employees(id))`);
   await run(`CREATE TABLE IF NOT EXISTS achievements (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, achievement_date TEXT, category TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS career_progression (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, from_role TEXT, to_role TEXT, progression_date TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS action_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, objective TEXT, owner TEXT, due_date TEXT, status TEXT DEFAULT 'Open', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS development_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, skill_area TEXT NOT NULL, development_goal TEXT, learning_actions TEXT, target_date TEXT, status TEXT DEFAULT 'In progress', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_employee_id INTEGER, team_id INTEGER, status TEXT DEFAULT 'Planning', start_date TEXT, end_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(owner_employee_id) REFERENCES employees(id), FOREIGN KEY(team_id) REFERENCES teams(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS employee_private_info (employee_id INTEGER PRIMARY KEY, salary REAL, bonus REAL, visa_status TEXT, visa_expiry_date TEXT, job_grade TEXT, birthday TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
+  await run(`CREATE TABLE IF NOT EXISTS audit_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, user_email TEXT, action TEXT NOT NULL, target_type TEXT, target_id TEXT, details TEXT, ip TEXT, user_agent TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  await run(`CREATE TABLE IF NOT EXISTS salary_history (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, salary REAL NOT NULL, effective_date TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
+  await run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   await run(`CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, assigned_employee_id INTEGER, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'Open', priority TEXT DEFAULT 'Medium', due_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL, FOREIGN KEY(assigned_employee_id) REFERENCES employees(id) ON DELETE SET NULL)`);
+  await ensureColumn('users', 'employee_id', 'INTEGER');
+  await ensureColumn('employees', 'photo_url', 'TEXT');
+  await seedDefaultSettings();
   const adminEmail = process.env.ADMIN_EMAIL || 'carlota.moron.ortiz@h-partners.com';
   const adminPassword = process.env.ADMIN_PASSWORD || 'CHANGE_ME_IN_RENDER';
   const existingAdmin = await get('SELECT id FROM users WHERE role=?', ['admin']);
@@ -70,25 +143,74 @@ async function initDb() {
   }
 }
 
-app.post('/api/login', async (req,res)=>{ const { email, password } = req.body; const user = await get('SELECT * FROM users WHERE email=?', [email]); if (!user || !verifyPassword(password, user.password_hash)) return res.status(401).json({ error:'Invalid login' }); req.session.user = { id:user.id, name:user.name, email:user.email, role:user.role }; res.json({ user:req.session.user }); });
+app.post('/api/login', async (req,res)=>{
+  const { email, password } = req.body;
+  const key = `${req.ip}:${String(email || '').toLowerCase()}`;
+  const now = Date.now();
+  const attempt = loginAttempts.get(key) || { count: 0, first: now };
+  if (now - attempt.first > 15 * 60 * 1000) { attempt.count = 0; attempt.first = now; }
+  if (attempt.count >= 8) return res.status(429).json({ error:'Too many login attempts. Try again later.' });
+  const user = await get('SELECT * FROM users WHERE email=?', [email]);
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    attempt.count += 1; loginAttempts.set(key, attempt);
+    return res.status(401).json({ error:'Invalid login' });
+  }
+  loginAttempts.delete(key);
+  const roles = rolesForUser(user);
+  req.session.user = { id:user.id, name:user.name, email:user.email, role:primaryRole(roles), roles, employee_id:user.employee_id };
+  await auditLog(req, 'login', 'user', user.id);
+  res.json({ user:{...req.session.user, csrfToken:req.session.csrfToken} });
+});
 app.post('/api/logout', (req,res)=> req.session.destroy(()=>res.json({ ok:true })));
-app.get('/api/me', (req,res)=> res.json({ user:req.session.user || null }));
+app.get('/api/me', (req,res)=> res.json({ user:req.session.user ? {...req.session.user, csrfToken:req.session.csrfToken} : null }));
 
 app.get('/api/dashboard', requireAuth, async (req,res)=>{
-  const [employees, teams, openActions, devPlans, projects, openTasks] = await Promise.all([
-    get('SELECT COUNT(*) n FROM employees WHERE status="Active"'), get('SELECT COUNT(*) n FROM teams'), get('SELECT COUNT(*) n FROM action_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM development_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM projects'), get('SELECT COUNT(*) n FROM tasks WHERE status != "Done"')
-  ]);
-  res.json({ employees: employees.n, teams: teams.n, openActions: openActions.n, developmentPlans: devPlans.n, projects: projects.n, openTasks: openTasks.n });
+  if (isAdmin(req)) {
+    const [employees, teams, openActions, devPlans, projects, openTasks] = await Promise.all([
+      get('SELECT COUNT(*) n FROM employees WHERE status="Active"'), get('SELECT COUNT(*) n FROM teams'), get('SELECT COUNT(*) n FROM action_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM development_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM projects'), get('SELECT COUNT(*) n FROM tasks WHERE status != "Done"')
+    ]);
+    return res.json({ employees: employees.n, teams: teams.n, openActions: openActions.n, developmentPlans: devPlans.n, projects: projects.n, openTasks: openTasks.n });
+  }
+  const employees = await scopedRows(req, 'employees');
+  const ids = employees.map(e => e.id);
+  const openActions = ids.length ? await get(`SELECT COUNT(*) n FROM action_plans WHERE status != "Done" AND employee_id IN (${placeholders(ids)})`, ids) : {n:0};
+  const devPlans = ids.length ? await get(`SELECT COUNT(*) n FROM development_plans WHERE status != "Done" AND employee_id IN (${placeholders(ids)})`, ids) : {n:0};
+  const openTasks = ids.length ? await get(`SELECT COUNT(*) n FROM tasks WHERE status != "Done" AND assigned_employee_id IN (${placeholders(ids)})`, ids) : {n:0};
+  res.json({ employees: employees.length, openActions: openActions.n, developmentPlans: devPlans.n, openTasks: openTasks.n });
 });
 
+async function scopedRows(req, table) {
+  if (isAdmin(req) || isHr(req)) return all(`SELECT * FROM ${table} ORDER BY id DESC`);
+  const selfId = await currentEmployeeId(req);
+  const managed = isManager(req) ? await managedEmployeeIds(req) : [];
+  const allowed = [...new Set([selfId, ...managed].filter(Boolean))];
+  if (table === 'employees') return allowed.length ? all(`SELECT * FROM employees WHERE id IN (${placeholders(allowed)}) ORDER BY id DESC`, allowed) : [];
+  const employeeField = table === 'tasks' ? 'assigned_employee_id' : 'employee_id';
+  if (['tasks','achievements','career_progression','action_plans','development_plans'].includes(table)) {
+    return allowed.length ? all(`SELECT * FROM ${table} WHERE ${employeeField} IN (${placeholders(allowed)}) ORDER BY id DESC`, allowed) : [];
+  }
+  if (['teams','projects'].includes(table)) return isManager(req) ? all(`SELECT * FROM ${table} ORDER BY id DESC`) : [];
+  return [];
+}
+async function canWrite(req, table, body, id=null) {
+  if (isAdmin(req) || isHr(req)) return true;
+  const selfId = await currentEmployeeId(req);
+  const managed = isManager(req) ? await managedEmployeeIds(req) : [];
+  const current = id ? await get(`SELECT * FROM ${table} WHERE id=?`, [id]) : null;
+  const target = Number(body.employee_id ?? body.assigned_employee_id ?? current?.employee_id ?? current?.assigned_employee_id ?? (table === 'employees' ? id : null));
+  if (isManager(req) && ['tasks','action_plans','development_plans','achievements'].includes(table)) return managed.includes(target);
+  if (isUser(req) && table === 'employees') return Number(id) === selfId;
+  if (isUser(req)) return table === 'tasks' && target === selfId && id;
+  return false;
+}
 function crud(table, fields) {
-  app.get(`/api/${table}`, requireAuth, async (req,res)=> res.json(await all(`SELECT * FROM ${table} ORDER BY id DESC`)));
-  app.post(`/api/${table}`, requireAuth, async (req,res)=>{ const cols = fields.filter(f => req.body[f] !== undefined); const vals = cols.map(f=>req.body[f]); const q = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`; const r = await run(q, vals); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [r.lastID])); });
-  app.put(`/api/${table}/:id`, requireAuth, async (req,res)=>{ const cols = fields.filter(f => req.body[f] !== undefined); await run(`UPDATE ${table} SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...cols.map(f=>req.body[f]), req.params.id]); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [req.params.id])); });
+  app.get(`/api/${table}`, requireAuth, async (req,res)=> res.json(await scopedRows(req, table)));
+  app.post(`/api/${table}`, requireAuth, async (req,res)=>{ if (!(await canWrite(req, table, req.body))) return res.status(403).json({ error:'Not allowed' }); const cols = fields.filter(f => req.body[f] !== undefined); const vals = cols.map(f=>req.body[f]); const q = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`; const r = await run(q, vals); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [r.lastID])); });
+  app.put(`/api/${table}/:id`, requireAuth, async (req,res)=>{ if (!(await canWrite(req, table, req.body, req.params.id))) return res.status(403).json({ error:'Not allowed' }); const cols = fields.filter(f => req.body[f] !== undefined); await run(`UPDATE ${table} SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...cols.map(f=>req.body[f]), req.params.id]); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [req.params.id])); });
   app.delete(`/api/${table}/:id`, requireAdmin, async (req,res)=>{ await run(`DELETE FROM ${table} WHERE id=?`, [req.params.id]); res.json({ ok:true }); });
 }
 crud('teams', ['name','description']);
-crud('employees', ['first_name','last_name','title','email','location','manager_id','team_id','start_date','level','status','skills','bio']);
+crud('employees', ['first_name','last_name','title','email','location','manager_id','team_id','start_date','level','status','skills','bio','photo_url']);
 crud('achievements', ['employee_id','title','description','achievement_date','category']);
 crud('career_progression', ['employee_id','from_role','to_role','progression_date','notes']);
 crud('action_plans', ['employee_id','title','objective','owner','due_date','status']);
@@ -96,6 +218,43 @@ crud('development_plans', ['employee_id','skill_area','development_goal','learni
 crud('projects', ['name','description','owner_employee_id','team_id','status','start_date','end_date']);
 crud('tasks', ['project_id','assigned_employee_id','title','description','status','priority','due_date']);
 
+
+app.get('/api/settings', requireAuth, async (req,res)=>{ const rows = await all('SELECT key,value FROM app_settings'); res.json(Object.fromEntries(rows.map(r => [r.key, JSON.parse(r.value)]))); });
+app.put('/api/settings', requireAdmin, async (req,res)=>{ for (const key of ['theme','tabs','dashboardCards']) if (req.body[key]) await run('INSERT OR REPLACE INTO app_settings (key,value) VALUES (?,?)', [key, JSON.stringify(req.body[key])]); res.json({ ok:true }); });
+app.get('/api/users', requireAdmin, async (req,res)=> res.json(await all('SELECT id,name,email,role,employee_id,created_at FROM users ORDER BY id DESC')));
+app.post('/api/users', requireAdmin, async (req,res)=>{ const {name,email,employee_id,password='ChangeMe123!'} = req.body; const roles = normalizeRoles(req.body.roles || req.body.role); const r = await run('INSERT INTO users (name,email,role,employee_id,password_hash) VALUES (?,?,?,?,?)', [name,email,roles.join(','),employee_id || null,hashPassword(password)]); await auditLog(req, 'create_user', 'user', r.lastID, { roles }); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [r.lastID])); });
+app.put('/api/users/:id', requireAdmin, async (req,res)=>{ const {password} = req.body; const body = {...req.body}; if (body.roles || body.role) body.role = normalizeRoles(body.roles || body.role).join(','); const cols = ['name','email','role','employee_id'].filter(f => body[f] !== undefined); const vals = cols.map(f => f === 'employee_id' && body[f] === '' ? null : body[f]); if (password) { cols.push('password_hash'); vals.push(hashPassword(password)); } await run(`UPDATE users SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...vals, req.params.id]); await auditLog(req, 'update_user', 'user', req.params.id, { roles: body.role }); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [req.params.id])); });
+app.delete('/api/users/:id', requireAdmin, async (req,res)=>{ await run('DELETE FROM users WHERE id=?', [req.params.id]); await auditLog(req, 'delete_user', 'user', req.params.id); res.json({ ok:true }); });
+
+
+app.get('/api/hr-info', requireHr, async (req,res)=>{
+  await auditLog(req, 'view_hr_info', 'employee_private_info');
+  res.json(await all(`SELECT e.id AS employee_id, e.first_name, e.last_name, e.email, e.title, h.salary, h.bonus, h.visa_status, h.visa_expiry_date, h.job_grade, h.birthday, h.updated_at
+    FROM employees e LEFT JOIN employee_private_info h ON h.employee_id=e.id ORDER BY e.last_name, e.first_name`));
+});
+app.put('/api/hr-info/:employeeId', requireHr, async (req,res)=>{
+  const employeeId = req.params.employeeId;
+  const before = await get('SELECT salary FROM employee_private_info WHERE employee_id=?', [employeeId]);
+  const values = {
+    salary:req.body.salary ?? null,
+    bonus:req.body.bonus ?? null,
+    visa_status:req.body.visa_status ?? null,
+    visa_expiry_date:req.body.visa_expiry_date ?? null,
+    job_grade:req.body.job_grade ?? null,
+    birthday:req.body.birthday ?? null
+  };
+  await run(`INSERT INTO employee_private_info (employee_id,salary,bonus,visa_status,visa_expiry_date,job_grade,birthday,updated_at)
+    VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(employee_id) DO UPDATE SET salary=excluded.salary, bonus=excluded.bonus, visa_status=excluded.visa_status, visa_expiry_date=excluded.visa_expiry_date, job_grade=excluded.job_grade, birthday=excluded.birthday, updated_at=CURRENT_TIMESTAMP`,
+    [employeeId, values.salary, values.bonus, values.visa_status, values.visa_expiry_date, values.job_grade, values.birthday]);
+  if (values.salary !== null && Number(values.salary) !== Number(before?.salary)) {
+    await run('INSERT INTO salary_history (employee_id,salary,effective_date,notes) VALUES (?,?,?,?)', [employeeId, values.salary, req.body.salary_effective_date || new Date().toISOString().slice(0,10), req.body.salary_notes || 'Salary updated']);
+  }
+  await auditLog(req, 'update_hr_info', 'employee_private_info', employeeId, { salaryChanged: values.salary !== null && Number(values.salary) !== Number(before?.salary) });
+  res.json(await get('SELECT * FROM employee_private_info WHERE employee_id=?', [employeeId]));
+});
+app.get('/api/hr-info/:employeeId/salary-history', requireHr, async (req,res)=>{ await auditLog(req, 'view_salary_history', 'salary_history', req.params.employeeId); res.json(await all('SELECT * FROM salary_history WHERE employee_id=? ORDER BY effective_date DESC, id DESC', [req.params.employeeId])); });
+app.post('/api/hr-info/:employeeId/salary-history', requireHr, async (req,res)=>{ const r = await run('INSERT INTO salary_history (employee_id,salary,effective_date,notes) VALUES (?,?,?,?)', [req.params.employeeId, req.body.salary, req.body.effective_date, req.body.notes]); await auditLog(req, 'create_salary_history', 'salary_history', req.params.employeeId); res.json(await get('SELECT * FROM salary_history WHERE id=?', [r.lastID])); });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
@@ -128,7 +287,7 @@ async function findManagerId(managerText) {
   return null;
 }
 
-app.post('/api/import/employees', requireAuth, upload.single('file'), async (req,res)=>{
+app.post('/api/import/employees', requireAdmin, upload.single('file'), async (req,res)=>{
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: false });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -189,14 +348,24 @@ app.post('/api/import/employees', requireAuth, upload.single('file'), async (req
 
 app.get('/api/people-directory', requireAuth, async (req,res)=>{
   const q = `%${req.query.q || ''}%`;
-  res.json(await all(`SELECT e.*, t.name AS team_name, m.first_name || ' ' || m.last_name AS manager_name FROM employees e LEFT JOIN teams t ON e.team_id=t.id LEFT JOIN employees m ON e.manager_id=m.id WHERE e.first_name LIKE ? OR e.last_name LIKE ? OR e.title LIKE ? OR e.skills LIKE ? OR t.name LIKE ? ORDER BY e.last_name`, [q,q,q,q,q]));
+  const scoped = await scopedRows(req, 'employees');
+  const ids = scoped.map(e => e.id);
+  if (!ids.length) return res.json([]);
+  res.json(await all(`SELECT e.*, t.name AS team_name, m.first_name || ' ' || m.last_name AS manager_name FROM employees e LEFT JOIN teams t ON e.team_id=t.id LEFT JOIN employees m ON e.manager_id=m.id WHERE e.id IN (${placeholders(ids)}) AND (e.first_name LIKE ? OR e.last_name LIKE ? OR e.title LIKE ? OR e.skills LIKE ? OR t.name LIKE ?) ORDER BY e.last_name`, [...ids,q,q,q,q,q]));
 });
 app.get('/api/org-chart', requireAuth, async (req,res)=>{
-  const rows = await all(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.title, e.manager_id, t.name AS team FROM employees e LEFT JOIN teams t ON e.team_id=t.id WHERE e.status='Active' ORDER BY e.manager_id`);
-  res.json(rows);
+  if (isAdmin(req) || isHr(req)) return res.json(await all(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.title, e.manager_id, t.name AS team FROM employees e LEFT JOIN teams t ON e.team_id=t.id WHERE e.status='Active' ORDER BY e.manager_id`));
+  const scoped = await scopedRows(req, 'employees');
+  const ids = scoped.map(e => e.id);
+  if (!ids.length) return res.json([]);
+  res.json(await all(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.title, e.manager_id, t.name AS team FROM employees e LEFT JOIN teams t ON e.team_id=t.id WHERE e.status='Active' AND e.id IN (${placeholders(ids)}) ORDER BY e.manager_id`, ids));
 });
 app.get('/api/employees/:id/profile', requireAuth, async (req,res)=>{
   const id = req.params.id;
+  if (!(isAdmin(req) || isHr(req))) {
+    const allowed = (await scopedRows(req, 'employees')).map(e => Number(e.id));
+    if (!allowed.includes(Number(id))) return res.status(403).json({ error:'Not allowed' });
+  }
   const [employee, achievements, progression, actions, development] = await Promise.all([
     get('SELECT e.*, t.name AS team_name, m.first_name || " " || m.last_name AS manager_name FROM employees e LEFT JOIN teams t ON e.team_id=t.id LEFT JOIN employees m ON e.manager_id=m.id WHERE e.id=?',[id]),
     all('SELECT * FROM achievements WHERE employee_id=? ORDER BY achievement_date DESC',[id]),
