@@ -9,7 +9,8 @@
 <body>
   <div id="login" class="login-card hidden">
     <div class="brand-mark">P</div>
-    <h1>PeopleOS</h1><p>Internal HR and talent platform</p>
+    <h1>PeopleOS</h1>
+    <p>Internal HR and talent platform</p>
     <input id="email" placeholder="Email" />
     <input id="password" placeholder="Password" type="password" />
     <button onclick="login()">Sign in</button>
@@ -24,31 +25,118 @@
           <h2>PeopleOS</h2>
         </div>
         <button id="menuToggle" class="menu-toggle" type="button" onclick="toggleMenu()" aria-expanded="false" aria-controls="navMenu">
-          <span></span><span></span><span></span>
+          <span></span>
+          <span></span>
+          <span></span>
           <span class="sr-only">Toggle menu</span>
         </button>
       </div>
       <nav id="navMenu" class="nav-menu" aria-label="Main navigation"></nav>
     </aside>
+
     <main>
-      <section id="dashboard" class="page"><h1>Dashboard</h1><p class="page-intro">A quick view of your people, projects, and talent actions.</p><div id="metrics" class="cards"></div></section>
-      <section id="directory" class="page hidden"><h1>People Directory</h1><input id="search" placeholder="Search name, skill, team, title..." oninput="loadDirectory()"/><div id="directoryRows" class="grid"></div></section>
-      <section id="teams" class="page hidden"><h1>Teams</h1><div id="teamsForm"></div><table id="teamsTable"></table></section>
-      <section id="employees" class="page hidden"><h1>Employees</h1><div class="import-box"><h3>Import employees from Excel/CSV</h3><p>Accepted columns: first_name, last_name, name, email, title, team, manager, location, start_date, level, status, skills, bio.</p><input id="employeeImportFile" type="file" accept=".xlsx,.xls,.csv" /><button onclick="importEmployees()">Upload employees</button><pre id="importResult"></pre></div><div id="employeesForm"></div><table id="employeesTable"></table></section>
-      <section id="projects" class="page hidden"><h1>Projects</h1><div id="projectsForm"></div><table id="projectsTable"></table></section>
-      <section id="tasks" class="page hidden"><h1>Tasks</h1><p class="page-intro">Drag tasks between status columns to update progress.</p><div id="tasksForm"></div><div id="tasksBoard" class="kanban-board"></div><table id="tasksTable" class="hidden"></table></section>
-      <section id="achievements" class="page hidden"><h1>Employee Achievements</h1><div id="achievementsForm"></div><table id="achievementsTable"></table></section>
-      <section id="progression" class="page hidden"><h1>Career Progression</h1><div id="career_progressionForm"></div><table id="career_progressionTable"></table></section>
-      <section id="actions" class="page hidden"><h1>Talent Action Plan</h1><div id="action_plansForm"></div><table id="action_plansTable"></table></section>
-      <section id="development" class="page hidden"><h1>Talent Development</h1><div id="development_plansForm"></div><table id="development_plansTable"></table></section>
-      <section id="org" class="page hidden"><h1>Org Chart</h1><p class="page-intro">A tree view of reporting lines.</p><div id="orgChart" class="org-tree"></div></section>
-      <section id="hr" class="page hidden"><h1>HR Secure Info</h1><p class="page-intro">Restricted HR-only salary, bonus, visa, job grade, birthday, and salary history records.</p><div id="hrRows" class="grid"></div></section>
-      <section id="audit" class="page hidden"><h1>Audit Log</h1><p class="page-intro">Admins can review sensitive access and role changes.</p><div id="auditRows"></div></section>
-      <section id="settings" class="page hidden"><h1>Settings</h1><p class="page-intro">Admins can rename tabs, change the purple theme, and configure task statuses without editing code.</p><div id="settingsForm"></div></section>
-      <section id="users" class="page hidden"><h1>Users</h1><p class="page-intro">Admins create user invites, assign one or more roles, and share the secure setup link so users create their own password.</p><div id="usersForm"></div><table id="usersTable"></table></section>
+      <section id="dashboard" class="page">
+        <h1>Dashboard</h1>
+        <p class="page-intro">A quick view of your people, projects, and talent actions.</p>
+        <div id="metrics" class="cards"></div>
+      </section>
+
+      <section id="directory" class="page hidden">
+        <h1>People Directory</h1>
+        <input id="search" placeholder="Search name, skill, team, title..." oninput="loadDirectory()" />
+        <div id="directoryRows" class="grid"></div>
+      </section>
+
+      <section id="teams" class="page hidden">
+        <h1>Teams</h1>
+        <div id="teamsForm"></div>
+        <table id="teamsTable"></table>
+      </section>
+
+      <section id="employees" class="page hidden">
+        <h1>Employees</h1>
+        <div class="import-box">
+          <h3>Import employees from Excel/CSV</h3>
+          <p>Accepted columns: first_name, last_name, name, email, title, team, manager, location, start_date, level, status, skills, bio.</p>
+          <input id="employeeImportFile" type="file" accept=".xlsx,.xls,.csv" />
+          <button onclick="importEmployees()">Upload employees</button>
+          <pre id="importResult"></pre>
+        </div>
+        <div id="employeesForm"></div>
+        <table id="employeesTable"></table>
+      </section>
+
+      <section id="projects" class="page hidden">
+        <h1>Projects</h1>
+        <div id="projectsForm"></div>
+        <table id="projectsTable"></table>
+      </section>
+
+      <section id="tasks" class="page hidden">
+        <h1>Tasks</h1>
+        <p class="page-intro">Drag tasks between status columns to update progress.</p>
+        <div id="tasksForm"></div>
+        <div id="tasksBoard" class="kanban-board"></div>
+        <table id="tasksTable" class="hidden"></table>
+      </section>
+
+      <section id="achievements" class="page hidden">
+        <h1>Employee Achievements</h1>
+        <div id="achievementsForm"></div>
+        <table id="achievementsTable"></table>
+      </section>
+
+      <section id="progression" class="page hidden">
+        <h1>Career Progression</h1>
+        <div id="career_progressionForm"></div>
+        <table id="career_progressionTable"></table>
+      </section>
+
+      <section id="actions" class="page hidden">
+        <h1>Talent Action Plan</h1>
+        <div id="action_plansForm"></div>
+        <table id="action_plansTable"></table>
+      </section>
+
+      <section id="development" class="page hidden">
+        <h1>Talent Development</h1>
+        <div id="development_plansForm"></div>
+        <table id="development_plansTable"></table>
+      </section>
+
+      <section id="org" class="page hidden">
+        <h1>Org Chart</h1>
+        <p class="page-intro">A tree view of reporting lines.</p>
+        <div id="orgChart" class="org-tree"></div>
+      </section>
+
+      <section id="hr" class="page hidden">
+        <h1>HR Secure Info</h1>
+        <p class="page-intro">Restricted HR-only salary, bonus, visa, job grade, birthday, and salary history records.</p>
+        <div id="hrRows" class="grid"></div>
+      </section>
+
+      <section id="audit" class="page hidden">
+        <h1>Audit Log</h1>
+        <p class="page-intro">Admins can review sensitive access and role changes.</p>
+        <div id="auditRows"></div>
+      </section>
+
+      <section id="settings" class="page hidden">
+        <h1>Settings</h1>
+        <p class="page-intro">Admins can rename tabs, change the purple theme, and configure task statuses without editing code.</p>
+        <div id="settingsForm"></div>
+      </section>
+
+      <section id="users" class="page hidden">
+        <h1>Users</h1>
+        <p class="page-intro">Admins create user invites, assign one or more roles, and share the secure setup link so users create their own password.</p>
+        <div id="usersForm"></div>
+        <table id="usersTable"></table>
+      </section>
     </main>
   </div>
 
-<script src="/app.js?v=secure-invite-1"></script>
+  <script src="/app.js?v=secure-invite-1"></script>
 </body>
 </html>
