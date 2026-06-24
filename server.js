@@ -40,11 +40,40 @@ function verifyPassword(password, stored) {
   const hash = crypto.scryptSync(password, salt, 64).toString('hex');
   return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(original, 'hex'));
 }
+async function ensureColumn(table, column, definition) {
+  const cols = await all(`PRAGMA table_info(${table})`);
+  if (!cols.some(c => c.name === column)) await run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+async function seedDefaultSettings() {
+  const defaults = {
+    theme: JSON.stringify({ brand:'#7c3aed', brandDark:'#5b21b6', accent:'#c084fc', bg:'#f7f2ff', ink:'#24113f' }),
+    tabs: JSON.stringify({ dashboard:'Dashboard', directory:'People Directory', teams:'Teams', employees:'Employees', projects:'Projects', tasks:'Tasks', achievements:'Achievements', progression:'Career Progression', actions:'Talent Action Plan', development:'Talent Development', org:'Org Chart', settings:'Settings', users:'Users' })
+  };
+  for (const [key, value] of Object.entries(defaults)) {
+    await run('INSERT OR IGNORE INTO app_settings (key,value) VALUES (?,?)', [key, value]);
+  }
+}
 function requireAuth(req, res, next) { if (!req.session.user) return res.status(401).json({ error: 'Not authenticated' }); next(); }
 function requireAdmin(req, res, next) { if (!req.session.user || req.session.user.role !== 'admin') return res.status(403).json({ error: 'Admin only' }); next(); }
+function userRole(req) { return req.session.user?.role || 'user'; }
+function isAdmin(req) { return userRole(req) === 'admin'; }
+function isManager(req) { return userRole(req) === 'manager'; }
+function isUser(req) { return userRole(req) === 'user'; }
+async function currentEmployeeId(req) {
+  if (req.session.user?.employee_id) return req.session.user.employee_id;
+  const employee = await get('SELECT id FROM employees WHERE lower(email)=lower(?)', [req.session.user?.email || '']);
+  return employee?.id || null;
+}
+async function managedEmployeeIds(req) {
+  const managerId = await currentEmployeeId(req);
+  if (!managerId) return [];
+  const rows = await all('SELECT id FROM employees WHERE manager_id=?', [managerId]);
+  return rows.map(r => r.id);
+}
+function placeholders(values) { return values.map(() => '?').join(','); }
 
 async function initDb() {
-  await run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, role TEXT DEFAULT 'admin', password_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
+  await run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, role TEXT DEFAULT 'admin', employee_id INTEGER, password_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id))`);
   await run(`CREATE TABLE IF NOT EXISTS teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
   await run(`CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT NOT NULL, last_name TEXT NOT NULL, title TEXT, email TEXT UNIQUE, location TEXT, manager_id INTEGER, team_id INTEGER, start_date TEXT, level TEXT, status TEXT DEFAULT 'Active', skills TEXT, bio TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(manager_id) REFERENCES employees(id))`);
   await run(`CREATE TABLE IF NOT EXISTS achievements (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, achievement_date TEXT, category TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
@@ -52,7 +81,10 @@ async function initDb() {
   await run(`CREATE TABLE IF NOT EXISTS action_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, objective TEXT, owner TEXT, due_date TEXT, status TEXT DEFAULT 'Open', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS development_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, skill_area TEXT NOT NULL, development_goal TEXT, learning_actions TEXT, target_date TEXT, status TEXT DEFAULT 'In progress', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_employee_id INTEGER, team_id INTEGER, status TEXT DEFAULT 'Planning', start_date TEXT, end_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(owner_employee_id) REFERENCES employees(id), FOREIGN KEY(team_id) REFERENCES teams(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   await run(`CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, assigned_employee_id INTEGER, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'Open', priority TEXT DEFAULT 'Medium', due_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL, FOREIGN KEY(assigned_employee_id) REFERENCES employees(id) ON DELETE SET NULL)`);
+  await ensureColumn('users', 'employee_id', 'INTEGER');
+  await seedDefaultSettings();
   const adminEmail = process.env.ADMIN_EMAIL || 'carlota.moron.ortiz@h-partners.com';
   const adminPassword = process.env.ADMIN_PASSWORD || 'CHANGE_ME_IN_RENDER';
   const existingAdmin = await get('SELECT id FROM users WHERE role=?', ['admin']);
@@ -70,21 +102,53 @@ async function initDb() {
   }
 }
 
-app.post('/api/login', async (req,res)=>{ const { email, password } = req.body; const user = await get('SELECT * FROM users WHERE email=?', [email]); if (!user || !verifyPassword(password, user.password_hash)) return res.status(401).json({ error:'Invalid login' }); req.session.user = { id:user.id, name:user.name, email:user.email, role:user.role }; res.json({ user:req.session.user }); });
+app.post('/api/login', async (req,res)=>{ const { email, password } = req.body; const user = await get('SELECT * FROM users WHERE email=?', [email]); if (!user || !verifyPassword(password, user.password_hash)) return res.status(401).json({ error:'Invalid login' }); req.session.user = { id:user.id, name:user.name, email:user.email, role:user.role, employee_id:user.employee_id }; res.json({ user:req.session.user }); });
 app.post('/api/logout', (req,res)=> req.session.destroy(()=>res.json({ ok:true })));
 app.get('/api/me', (req,res)=> res.json({ user:req.session.user || null }));
 
 app.get('/api/dashboard', requireAuth, async (req,res)=>{
-  const [employees, teams, openActions, devPlans, projects, openTasks] = await Promise.all([
-    get('SELECT COUNT(*) n FROM employees WHERE status="Active"'), get('SELECT COUNT(*) n FROM teams'), get('SELECT COUNT(*) n FROM action_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM development_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM projects'), get('SELECT COUNT(*) n FROM tasks WHERE status != "Done"')
-  ]);
-  res.json({ employees: employees.n, teams: teams.n, openActions: openActions.n, developmentPlans: devPlans.n, projects: projects.n, openTasks: openTasks.n });
+  if (isAdmin(req)) {
+    const [employees, teams, openActions, devPlans, projects, openTasks] = await Promise.all([
+      get('SELECT COUNT(*) n FROM employees WHERE status="Active"'), get('SELECT COUNT(*) n FROM teams'), get('SELECT COUNT(*) n FROM action_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM development_plans WHERE status != "Done"'), get('SELECT COUNT(*) n FROM projects'), get('SELECT COUNT(*) n FROM tasks WHERE status != "Done"')
+    ]);
+    return res.json({ employees: employees.n, teams: teams.n, openActions: openActions.n, developmentPlans: devPlans.n, projects: projects.n, openTasks: openTasks.n });
+  }
+  const employees = await scopedRows(req, 'employees');
+  const ids = employees.map(e => e.id);
+  const openActions = ids.length ? await get(`SELECT COUNT(*) n FROM action_plans WHERE status != "Done" AND employee_id IN (${placeholders(ids)})`, ids) : {n:0};
+  const devPlans = ids.length ? await get(`SELECT COUNT(*) n FROM development_plans WHERE status != "Done" AND employee_id IN (${placeholders(ids)})`, ids) : {n:0};
+  const openTasks = ids.length ? await get(`SELECT COUNT(*) n FROM tasks WHERE status != "Done" AND assigned_employee_id IN (${placeholders(ids)})`, ids) : {n:0};
+  res.json({ employees: employees.length, openActions: openActions.n, developmentPlans: devPlans.n, openTasks: openTasks.n });
 });
 
+async function scopedRows(req, table) {
+  if (isAdmin(req)) return all(`SELECT * FROM ${table} ORDER BY id DESC`);
+  const selfId = await currentEmployeeId(req);
+  const managed = isManager(req) ? await managedEmployeeIds(req) : [];
+  const allowed = [...new Set([selfId, ...managed].filter(Boolean))];
+  if (table === 'employees') return allowed.length ? all(`SELECT * FROM employees WHERE id IN (${placeholders(allowed)}) ORDER BY id DESC`, allowed) : [];
+  const employeeField = table === 'tasks' ? 'assigned_employee_id' : 'employee_id';
+  if (['tasks','achievements','career_progression','action_plans','development_plans'].includes(table)) {
+    return allowed.length ? all(`SELECT * FROM ${table} WHERE ${employeeField} IN (${placeholders(allowed)}) ORDER BY id DESC`, allowed) : [];
+  }
+  if (['teams','projects'].includes(table)) return isManager(req) ? all(`SELECT * FROM ${table} ORDER BY id DESC`) : [];
+  return [];
+}
+async function canWrite(req, table, body, id=null) {
+  if (isAdmin(req)) return true;
+  const selfId = await currentEmployeeId(req);
+  const managed = isManager(req) ? await managedEmployeeIds(req) : [];
+  const current = id ? await get(`SELECT * FROM ${table} WHERE id=?`, [id]) : null;
+  const target = Number(body.employee_id ?? body.assigned_employee_id ?? current?.employee_id ?? current?.assigned_employee_id ?? (table === 'employees' ? id : null));
+  if (isManager(req) && ['tasks','action_plans','development_plans','achievements'].includes(table)) return managed.includes(target);
+  if (isUser(req) && table === 'employees') return Number(id) === selfId;
+  if (isUser(req)) return table === 'tasks' && target === selfId && id;
+  return false;
+}
 function crud(table, fields) {
-  app.get(`/api/${table}`, requireAuth, async (req,res)=> res.json(await all(`SELECT * FROM ${table} ORDER BY id DESC`)));
-  app.post(`/api/${table}`, requireAuth, async (req,res)=>{ const cols = fields.filter(f => req.body[f] !== undefined); const vals = cols.map(f=>req.body[f]); const q = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`; const r = await run(q, vals); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [r.lastID])); });
-  app.put(`/api/${table}/:id`, requireAuth, async (req,res)=>{ const cols = fields.filter(f => req.body[f] !== undefined); await run(`UPDATE ${table} SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...cols.map(f=>req.body[f]), req.params.id]); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [req.params.id])); });
+  app.get(`/api/${table}`, requireAuth, async (req,res)=> res.json(await scopedRows(req, table)));
+  app.post(`/api/${table}`, requireAuth, async (req,res)=>{ if (!(await canWrite(req, table, req.body))) return res.status(403).json({ error:'Not allowed' }); const cols = fields.filter(f => req.body[f] !== undefined); const vals = cols.map(f=>req.body[f]); const q = `INSERT INTO ${table} (${cols.join(',')}) VALUES (${cols.map(()=>'?').join(',')})`; const r = await run(q, vals); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [r.lastID])); });
+  app.put(`/api/${table}/:id`, requireAuth, async (req,res)=>{ if (!(await canWrite(req, table, req.body, req.params.id))) return res.status(403).json({ error:'Not allowed' }); const cols = fields.filter(f => req.body[f] !== undefined); await run(`UPDATE ${table} SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...cols.map(f=>req.body[f]), req.params.id]); res.json(await get(`SELECT * FROM ${table} WHERE id=?`, [req.params.id])); });
   app.delete(`/api/${table}/:id`, requireAdmin, async (req,res)=>{ await run(`DELETE FROM ${table} WHERE id=?`, [req.params.id]); res.json({ ok:true }); });
 }
 crud('teams', ['name','description']);
@@ -96,6 +160,13 @@ crud('development_plans', ['employee_id','skill_area','development_goal','learni
 crud('projects', ['name','description','owner_employee_id','team_id','status','start_date','end_date']);
 crud('tasks', ['project_id','assigned_employee_id','title','description','status','priority','due_date']);
 
+
+app.get('/api/settings', requireAuth, async (req,res)=>{ const rows = await all('SELECT key,value FROM app_settings'); res.json(Object.fromEntries(rows.map(r => [r.key, JSON.parse(r.value)]))); });
+app.put('/api/settings', requireAdmin, async (req,res)=>{ for (const key of ['theme','tabs']) if (req.body[key]) await run('INSERT OR REPLACE INTO app_settings (key,value) VALUES (?,?)', [key, JSON.stringify(req.body[key])]); res.json({ ok:true }); });
+app.get('/api/users', requireAdmin, async (req,res)=> res.json(await all('SELECT id,name,email,role,employee_id,created_at FROM users ORDER BY id DESC')));
+app.post('/api/users', requireAdmin, async (req,res)=>{ const {name,email,role='user',employee_id,password='ChangeMe123!'} = req.body; const r = await run('INSERT INTO users (name,email,role,employee_id,password_hash) VALUES (?,?,?,?,?)', [name,email,role,employee_id || null,hashPassword(password)]); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [r.lastID])); });
+app.put('/api/users/:id', requireAdmin, async (req,res)=>{ const {name,email,role,employee_id,password} = req.body; const cols = ['name','email','role','employee_id'].filter(f => req.body[f] !== undefined); const vals = cols.map(f => f === 'employee_id' && req.body[f] === '' ? null : req.body[f]); if (password) { cols.push('password_hash'); vals.push(hashPassword(password)); } await run(`UPDATE users SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...vals, req.params.id]); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [req.params.id])); });
+app.delete('/api/users/:id', requireAdmin, async (req,res)=>{ await run('DELETE FROM users WHERE id=?', [req.params.id]); res.json({ ok:true }); });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
@@ -128,7 +199,7 @@ async function findManagerId(managerText) {
   return null;
 }
 
-app.post('/api/import/employees', requireAuth, upload.single('file'), async (req,res)=>{
+app.post('/api/import/employees', requireAdmin, upload.single('file'), async (req,res)=>{
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   const workbook = XLSX.read(req.file.buffer, { type: 'buffer', cellDates: false });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
@@ -189,14 +260,24 @@ app.post('/api/import/employees', requireAuth, upload.single('file'), async (req
 
 app.get('/api/people-directory', requireAuth, async (req,res)=>{
   const q = `%${req.query.q || ''}%`;
-  res.json(await all(`SELECT e.*, t.name AS team_name, m.first_name || ' ' || m.last_name AS manager_name FROM employees e LEFT JOIN teams t ON e.team_id=t.id LEFT JOIN employees m ON e.manager_id=m.id WHERE e.first_name LIKE ? OR e.last_name LIKE ? OR e.title LIKE ? OR e.skills LIKE ? OR t.name LIKE ? ORDER BY e.last_name`, [q,q,q,q,q]));
+  const scoped = await scopedRows(req, 'employees');
+  const ids = scoped.map(e => e.id);
+  if (!ids.length) return res.json([]);
+  res.json(await all(`SELECT e.*, t.name AS team_name, m.first_name || ' ' || m.last_name AS manager_name FROM employees e LEFT JOIN teams t ON e.team_id=t.id LEFT JOIN employees m ON e.manager_id=m.id WHERE e.id IN (${placeholders(ids)}) AND (e.first_name LIKE ? OR e.last_name LIKE ? OR e.title LIKE ? OR e.skills LIKE ? OR t.name LIKE ?) ORDER BY e.last_name`, [...ids,q,q,q,q,q]));
 });
 app.get('/api/org-chart', requireAuth, async (req,res)=>{
-  const rows = await all(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.title, e.manager_id, t.name AS team FROM employees e LEFT JOIN teams t ON e.team_id=t.id WHERE e.status='Active' ORDER BY e.manager_id`);
-  res.json(rows);
+  if (isAdmin(req)) return res.json(await all(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.title, e.manager_id, t.name AS team FROM employees e LEFT JOIN teams t ON e.team_id=t.id WHERE e.status='Active' ORDER BY e.manager_id`));
+  const scoped = await scopedRows(req, 'employees');
+  const ids = scoped.map(e => e.id);
+  if (!ids.length) return res.json([]);
+  res.json(await all(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.title, e.manager_id, t.name AS team FROM employees e LEFT JOIN teams t ON e.team_id=t.id WHERE e.status='Active' AND e.id IN (${placeholders(ids)}) ORDER BY e.manager_id`, ids));
 });
 app.get('/api/employees/:id/profile', requireAuth, async (req,res)=>{
   const id = req.params.id;
+  if (!isAdmin(req)) {
+    const allowed = (await scopedRows(req, 'employees')).map(e => Number(e.id));
+    if (!allowed.includes(Number(id))) return res.status(403).json({ error:'Not allowed' });
+  }
   const [employee, achievements, progression, actions, development] = await Promise.all([
     get('SELECT e.*, t.name AS team_name, m.first_name || " " || m.last_name AS manager_name FROM employees e LEFT JOIN teams t ON e.team_id=t.id LEFT JOIN employees m ON e.manager_id=m.id WHERE e.id=?',[id]),
     all('SELECT * FROM achievements WHERE employee_id=? ORDER BY achievement_date DESC',[id]),
