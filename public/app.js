@@ -25,7 +25,7 @@ const requiredFields = {
   teams: ['name'], employees: ['first_name','last_name','email'], projects: ['name'], tasks: ['title'], achievements: ['employee_id','title'], career_progression: ['employee_id'], action_plans: ['employee_id','title'], development_plans: ['employee_id','skill_area']
 };
 const labels = s => s.replaceAll('_',' ').replace(/\b\w/g,c=>c.toUpperCase());
-let currentUser = null, employees = [], teams = [], projects = [];
+let currentUser = null, employees = [], teams = [], projects = [], activePage = 'dashboard', editing = null;
 
 async function boot(){
   try {
@@ -34,31 +34,61 @@ async function boot(){
     if(currentUser){ await refreshLookups(); show('dashboard'); }
   } catch(e) { alert(e.message); }
 }
+function toggleMenu(){
+  const sidebar = $('sidebar');
+  const expanded = sidebar.classList.toggle('sidebar-collapsed') === false;
+  $('menuToggle').setAttribute('aria-expanded', String(expanded));
+}
+function setActiveNav(id){
+  activePage = id;
+  document.querySelectorAll('.nav-menu button').forEach(button => {
+    button.classList.toggle('active', button.getAttribute('onclick') === `show('${id}')`);
+  });
+}
 async function login(){ try{ await api('/api/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})}); boot(); }catch(e){alert(e.message)} }
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
-function show(id){ document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden')); $(id).classList.remove('hidden'); if(id==='dashboard') loadDashboard(); if(id==='directory') loadDirectory(); if(id==='org') loadOrg(); const map={teams:'teams',employees:'employees',projects:'projects',tasks:'tasks',achievements:'achievements',progression:'career_progression',actions:'action_plans',development:'development_plans'}; if(map[id]) loadTable(map[id]); }
+function show(id){
+  document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
+  $(id).classList.remove('hidden');
+  setActiveNav(id);
+  if(window.matchMedia('(max-width: 900px)').matches) { $('sidebar').classList.add('sidebar-collapsed'); $('menuToggle').setAttribute('aria-expanded', 'false'); }
+  if(id==='dashboard') loadDashboard();
+  if(id==='directory') loadDirectory();
+  if(id==='org') loadOrg();
+  const map={teams:'teams',employees:'employees',projects:'projects',tasks:'tasks',achievements:'achievements',progression:'career_progression',actions:'action_plans',development:'development_plans'};
+  if(map[id]) loadTable(map[id]);
+}
 async function refreshLookups(){ teams = await api('/api/teams'); employees = await api('/api/employees'); projects = await api('/api/projects'); }
 async function loadDashboard(){ const d = await api('/api/dashboard'); $('metrics').innerHTML = Object.entries(d).map(([k,v])=>`<div class="card"><div class="metric">${v}</div><div>${labels(k)}</div></div>`).join(''); }
 
-function inputFor(field, table){
+function selectedAttr(optionValue, value){ return String(optionValue) === String(value) ? 'selected' : ''; }
+function inputFor(field, table, value = ''){
   const req = (requiredFields[table] || []).includes(field) ? 'required' : '';
-  if(field==='team_id') return `<select name="team_id"><option value="">No team</option>${teams.map(t=>`<option value="${t.id}">${escapeHtml(t.name)}</option>`).join('')}</select>`;
-  if(field==='manager_id'||field==='employee_id'||field==='owner_employee_id'||field==='assigned_employee_id') return `<select name="${field}" ${req}><option value="">Select employee</option>${employees.map(e=>`<option value="${e.id}">${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}</option>`).join('')}</select>`;
-  if(field==='project_id') return `<select name="project_id"><option value="">No project</option>${projects.map(p=>`<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('')}</select>`;
-  if(field==='status') return `<select name="status"><option>Active</option><option>Planning</option><option>Open</option><option>In progress</option><option>Blocked</option><option>Done</option><option>Archived</option></select>`;
-  if(field==='priority') return `<select name="priority"><option>Low</option><option selected>Medium</option><option>High</option><option>Critical</option></select>`;
-  if(field.includes('date')) return `<input name="${field}" type="date" placeholder="${labels(field)}"/>`;
-  if(['description','bio','objective','notes','learning_actions','development_goal'].includes(field)) return `<textarea name="${field}" placeholder="${labels(field)}" ${req}></textarea>`;
-  return `<input name="${field}" placeholder="${labels(field)}" ${req}/>`;
+  const safeValue = escapeHtml(value ?? '');
+  if(field==='team_id') return `<select name="team_id"><option value="">No team</option>${teams.map(t=>`<option value="${t.id}" ${selectedAttr(t.id, value)}>${escapeHtml(t.name)}</option>`).join('')}</select>`;
+  if(field==='manager_id'||field==='employee_id'||field==='owner_employee_id'||field==='assigned_employee_id') return `<select name="${field}" ${req}><option value="">Select employee</option>${employees.map(e=>`<option value="${e.id}" ${selectedAttr(e.id, value)}>${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}</option>`).join('')}</select>`;
+  if(field==='project_id') return `<select name="project_id"><option value="">No project</option>${projects.map(p=>`<option value="${p.id}" ${selectedAttr(p.id, value)}>${escapeHtml(p.name)}</option>`).join('')}</select>`;
+  if(field==='status') { const options = ['Active','Planning','Open','In progress','Blocked','Done','Archived']; return `<select name="status">${options.map(o=>`<option ${selectedAttr(o, value)}>${o}</option>`).join('')}</select>`; }
+  if(field==='priority') { const options = ['Low','Medium','High','Critical']; const selected = value || 'Medium'; return `<select name="priority">${options.map(o=>`<option ${selectedAttr(o, selected)}>${o}</option>`).join('')}</select>`; }
+  if(field.includes('date')) return `<input name="${field}" type="date" value="${safeValue}" placeholder="${labels(field)}"/>`;
+  if(['description','bio','objective','notes','learning_actions','development_goal'].includes(field)) return `<textarea name="${field}" placeholder="${labels(field)}" ${req}>${safeValue}</textarea>`;
+  return `<input name="${field}" value="${safeValue}" placeholder="${labels(field)}" ${req}/>`;
 }
 async function loadTable(table){
   await refreshLookups();
   const rows = await api(`/api/${table}`);
-  const formId = `${table}Form`;
-  $(formId).innerHTML = `<form class="form" onsubmit="createRow(event,'${table}')">${configs[table].map(f=>inputFor(f, table)).join('')}<button>Add ${labels(table)}</button></form>`;
+  renderForm(table);
   const th = ['id', ...configs[table]];
-  $(`${table}Table`).innerHTML = `<thead><tr>${th.map(h=>`<th>${labels(h)}</th>`).join('')}<th>Actions</th></tr></thead><tbody>${rows.map(r=>`<tr>${th.map(h=>`<td>${displayValue(h, r[h])}</td>`).join('')}<td><button onclick="deleteRow('${table}',${r.id})">Delete</button></td></tr>`).join('')}</tbody>`;
+  $(`${table}Table`).innerHTML = `<thead><tr>${th.map(h=>`<th>${labels(h)}</th>`).join('')}<th>Actions</th></tr></thead><tbody>${rows.map(r=>`<tr class="${editing?.table === table && editing?.row.id === r.id ? 'editing-row' : ''}">${th.map(h=>`<td>${displayValue(h, r[h])}</td>`).join('')}<td class="actions-cell"><button class="ghost" onclick="startEdit('${table}','${encodeURIComponent(JSON.stringify(r))}')">Edit</button><button class="danger" onclick="deleteRow('${table}',${r.id})">Delete</button></td></tr>`).join('')}</tbody>`;
 }
+function renderForm(table, row = null){
+  const isEditing = !!row;
+  editing = row ? { table, row } : null;
+  const formId = `${table}Form`;
+  $(formId).innerHTML = `<form class="form" onsubmit="${isEditing ? `updateRow(event,'${table}',${row.id})` : `createRow(event,'${table}')`}"><h3 class="form-title">${isEditing ? `Edit ${labels(table)} #${row.id}` : `Add ${labels(table)}`}</h3>${configs[table].map(f=>inputFor(f, table, row?.[f] ?? '')).join('')}<button>${isEditing ? 'Save changes' : `Add ${labels(table)}`}</button>${isEditing ? `<button class="ghost" type="button" onclick="cancelEdit('${table}')">Cancel</button>` : ''}</form>`;
+}
+function startEdit(table, encodedRow){ renderForm(table, JSON.parse(decodeURIComponent(encodedRow))); window.scrollTo({ top: 0, behavior: 'smooth' }); }
+function cancelEdit(table){ editing = null; renderForm(table); loadTable(table); }
 function displayValue(field, value){
   if(value === null || value === undefined) return '';
   if(['employee_id','manager_id','owner_employee_id','assigned_employee_id'].includes(field)) { const e = employees.find(x=>String(x.id)===String(value)); return e ? `${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}` : value; }
@@ -66,7 +96,10 @@ function displayValue(field, value){
   if(field==='project_id') { const p = projects.find(x=>String(x.id)===String(value)); return p ? escapeHtml(p.name) : value; }
   return escapeHtml(String(value));
 }
-async function createRow(e, table){ e.preventDefault(); try { const data = Object.fromEntries(new FormData(e.target).entries()); Object.keys(data).forEach(k=>{if(data[k]==='') delete data[k]}); await api(`/api/${table}`, {method:'POST', body:JSON.stringify(data)}); e.target.reset(); await loadTable(table); } catch(err) { alert(err.message); } }
+function formDataWithoutBlanks(form){ const data = Object.fromEntries(new FormData(form).entries()); Object.keys(data).forEach(k=>{if(data[k]==='') delete data[k]}); return data; }
+function formDataForUpdate(form){ const data = Object.fromEntries(new FormData(form).entries()); Object.keys(data).forEach(k=>{if(data[k]==='') data[k] = null}); return data; }
+async function createRow(e, table){ e.preventDefault(); try { await api(`/api/${table}`, {method:'POST', body:JSON.stringify(formDataWithoutBlanks(e.target))}); e.target.reset(); editing = null; await loadTable(table); } catch(err) { alert(err.message); } }
+async function updateRow(e, table, id){ e.preventDefault(); try { await api(`/api/${table}/${id}`, {method:'PUT', body:JSON.stringify(formDataForUpdate(e.target))}); editing = null; await loadTable(table); } catch(err) { alert(err.message); } }
 async function deleteRow(table,id){ if(confirm('Delete this record?')){ try{ await api(`/api/${table}/${id}`,{method:'DELETE'}); await loadTable(table); }catch(e){ alert(e.message); } } }
 
 async function importEmployees(){

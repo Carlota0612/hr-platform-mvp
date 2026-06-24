@@ -8,6 +8,7 @@
 </head>
 <body>
   <div id="login" class="login-card hidden">
+    <div class="brand-mark">P</div>
     <h1>PeopleOS</h1><p>Internal HR and talent platform</p>
     <input id="email" placeholder="Email" />
     <input id="password" placeholder="Password" type="password" />
@@ -16,23 +17,34 @@
   </div>
 
   <div id="app" class="hidden shell">
-    <aside>
-      <h2>PeopleOS</h2>
-      <button onclick="show('dashboard')">Dashboard</button>
-      <button onclick="show('directory')">People Directory</button>
-      <button onclick="show('teams')">Teams</button>
-      <button onclick="show('employees')">Employees</button>
-      <button onclick="show('projects')">Projects</button>
-      <button onclick="show('tasks')">Tasks</button>
-      <button onclick="show('achievements')">Achievements</button>
-      <button onclick="show('progression')">Career Progression</button>
-      <button onclick="show('actions')">Talent Action Plan</button>
-      <button onclick="show('development')">Talent Development</button>
-      <button onclick="show('org')">Org Chart</button>
-      <button onclick="logout()" class="secondary">Logout</button>
+    <aside id="sidebar" class="sidebar-collapsed">
+      <div class="side-header">
+        <div>
+          <div class="eyebrow">Workspace</div>
+          <h2>PeopleOS</h2>
+        </div>
+        <button id="menuToggle" class="menu-toggle" type="button" onclick="toggleMenu()" aria-expanded="false" aria-controls="navMenu">
+          <span></span><span></span><span></span>
+          <span class="sr-only">Toggle menu</span>
+        </button>
+      </div>
+      <nav id="navMenu" class="nav-menu" aria-label="Main navigation">
+        <button onclick="show('dashboard')">Dashboard</button>
+        <button onclick="show('directory')">People Directory</button>
+        <button onclick="show('teams')">Teams</button>
+        <button onclick="show('employees')">Employees</button>
+        <button onclick="show('projects')">Projects</button>
+        <button onclick="show('tasks')">Tasks</button>
+        <button onclick="show('achievements')">Achievements</button>
+        <button onclick="show('progression')">Career Progression</button>
+        <button onclick="show('actions')">Talent Action Plan</button>
+        <button onclick="show('development')">Talent Development</button>
+        <button onclick="show('org')">Org Chart</button>
+        <button onclick="logout()" class="secondary">Logout</button>
+      </nav>
     </aside>
     <main>
-      <section id="dashboard" class="page"><h1>Dashboard</h1><div id="metrics" class="cards"></div></section>
+      <section id="dashboard" class="page"><h1>Dashboard</h1><p class="page-intro">A quick view of your people, projects, and talent actions.</p><div id="metrics" class="cards"></div></section>
       <section id="directory" class="page hidden"><h1>People Directory</h1><input id="search" placeholder="Search name, skill, team, title..." oninput="loadDirectory()"/><div id="directoryRows" class="grid"></div></section>
       <section id="teams" class="page hidden"><h1>Teams</h1><div id="teamsForm"></div><table id="teamsTable"></table></section>
       <section id="employees" class="page hidden"><h1>Employees</h1><div class="import-box"><h3>Import employees from Excel/CSV</h3><p>Accepted columns: first_name, last_name, name, email, title, team, manager, location, start_date, level, status, skills, bio.</p><input id="employeeImportFile" type="file" accept=".xlsx,.xls,.csv" /><button onclick="importEmployees()">Upload employees</button><pre id="importResult"></pre></div><div id="employeesForm"></div><table id="employeesTable"></table></section>
