@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>PeopleOS HR Platform</title>
-  <link rel="stylesheet" href="/styles.css?v=secure-kanban-1" />
+  <link rel="stylesheet" href="/styles.css?v=secure-invite-1" />
 </head>
 <body>
   <div id="login" class="login-card hidden">
@@ -43,7 +43,7 @@
 
       <section id="directory" class="page hidden">
         <h1>People Directory</h1>
-        <input id="search" placeholder="Search name, skill, team, title..." oninput="loadDirectory()"/>
+        <input id="search" placeholder="Search name, skill, team, title..." oninput="loadDirectory()" />
         <div id="directoryRows" class="grid"></div>
       </section>
 
@@ -130,13 +130,13 @@
 
       <section id="users" class="page hidden">
         <h1>Users</h1>
-        <p class="page-intro">Admins can create website logins and choose admin, manager, or user access.</p>
+        <p class="page-intro">Admins create user invites, assign one or more roles, and share the secure setup link so users create their own password.</p>
         <div id="usersForm"></div>
         <table id="usersTable"></table>
       </section>
     </main>
   </div>
 
-  <script src="/app.js?v=secure-kanban-1"></script>
+  <script src="/app.js?v=secure-invite-1"></script>
 </body>
 </html>
