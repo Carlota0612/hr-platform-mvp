@@ -5,14 +5,16 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "security-test": "node security-smoke-test.js",
+    "generate-secrets": "node -e \"const crypto=require('crypto'); console.log('SESSION_SECRET='+crypto.randomBytes(32).toString('base64url')); console.log('HR_ENCRYPTION_KEY='+crypto.randomBytes(32).toString('base64url'));\""
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "description": "",
   "engines": {
-    "node": ">=18"
+    "node": "20.x"
   },
   "dependencies": {
     "body-parser": "^1.20.2",
