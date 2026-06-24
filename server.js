@@ -166,14 +166,12 @@ crud('development_plans', ['employee_id','skill_area','development_goal','learni
 crud('projects', ['name','description','owner_employee_id','team_id','status','start_date','end_date']);
 crud('tasks', ['project_id','assigned_employee_id','title','description','status','priority','due_date']);
 
-
 app.get('/api/settings', requireAuth, async (req,res)=>{ const rows = await all('SELECT key,value FROM app_settings'); res.json(Object.fromEntries(rows.map(r => [r.key, JSON.parse(r.value)]))); });
 app.put('/api/settings', requireAdmin, async (req,res)=>{ for (const key of ['theme','tabs','dashboardCards']) if (req.body[key]) await run('INSERT OR REPLACE INTO app_settings (key,value) VALUES (?,?)', [key, JSON.stringify(req.body[key])]); res.json({ ok:true }); });
 app.get('/api/users', requireAdmin, async (req,res)=> res.json(await all('SELECT id,name,email,role,employee_id,created_at FROM users ORDER BY id DESC')));
 app.post('/api/users', requireAdmin, async (req,res)=>{ const {name,email,role='user',employee_id,password='ChangeMe123!'} = req.body; const r = await run('INSERT INTO users (name,email,role,employee_id,password_hash) VALUES (?,?,?,?,?)', [name,email,role,employee_id || null,hashPassword(password)]); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [r.lastID])); });
 app.put('/api/users/:id', requireAdmin, async (req,res)=>{ const {name,email,role,employee_id,password} = req.body; const cols = ['name','email','role','employee_id'].filter(f => req.body[f] !== undefined); const vals = cols.map(f => f === 'employee_id' && req.body[f] === '' ? null : req.body[f]); if (password) { cols.push('password_hash'); vals.push(hashPassword(password)); } await run(`UPDATE users SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...vals, req.params.id]); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [req.params.id])); });
 app.delete('/api/users/:id', requireAdmin, async (req,res)=>{ await run('DELETE FROM users WHERE id=?', [req.params.id]); res.json({ ok:true }); });
-
 
 app.get('/api/hr-info', requireHr, async (req,res)=>{
   res.json(await all(`SELECT e.id AS employee_id, e.first_name, e.last_name, e.email, e.title, h.salary, h.bonus, h.visa_status, h.visa_expiry_date, h.job_grade, h.birthday, h.updated_at
