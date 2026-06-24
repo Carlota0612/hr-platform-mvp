@@ -50,19 +50,32 @@ function toggleMenu(){ const sidebar = $('sidebar'); const expanded = sidebar.cl
 function setActiveNav(id){ activePage = id; document.querySelectorAll('.nav-menu button').forEach(button => button.classList.toggle('active', button.getAttribute('onclick') === `show('${id}')`)); }
 async function login(){ try{ await api('/api/login',{method:'POST',body:JSON.stringify({email:$('email').value,password:$('password').value})}); boot(); }catch(e){alert(e.message)} }
 async function logout(){ await api('/api/logout',{method:'POST'}); location.reload(); }
+
 function show(id){
   if(!allowedPages().includes(id)) id='dashboard';
-  document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden')); $(id).classList.remove('hidden'); setActiveNav(id);
+  document.querySelectorAll('.page').forEach(p=>p.classList.add('hidden'));
+  $(id).classList.remove('hidden');
+  setActiveNav(id);
   document.querySelector(`#${id} h1`).textContent = tabName(id);
   if(window.matchMedia('(max-width: 900px)').matches) { $('sidebar').classList.add('sidebar-collapsed'); $('menuToggle').setAttribute('aria-expanded', 'false'); }
-  if(id==='dashboard') loadDashboard(); if(id==='directory') loadDirectory(); if(id==='org') loadOrg(); if(id==='hr') loadHrInfo(); if(id==='audit') loadAudit(); if(id==='settings') renderSettings(); if(id==='users') loadTable('users');
-  const map={teams:'teams',employees:'employees',projects:'projects',tasks:'tasks',achievements:'achievements',progression:'career_progression',actions:'action_plans',development:'development_plans'}; if(map[id]) loadTable(map[id]);
+  if(id==='dashboard') loadDashboard();
+  if(id==='directory') loadDirectory();
+  if(id==='org') loadOrg();
+  if(id==='hr') loadHrInfo();
+  if(id==='audit') loadAudit();
+  if(id==='settings') renderSettings();
+  if(id==='users') loadTable('users');
+  const map={teams:'teams',employees:'employees',projects:'projects',tasks:'tasks',achievements:'achievements',progression:'career_progression',actions:'action_plans',development:'development_plans'};
+  if(map[id]) loadTable(map[id]);
 }
+
 async function refreshLookups(){ teams = await api('/api/teams'); employees = await api('/api/employees'); projects = await api('/api/projects'); }
 async function loadDashboard(){ const d = await api('/api/dashboard'); const selected = settings.dashboardCards || Object.keys(d); $('metrics').innerHTML = Object.entries(d).filter(([k])=>selected.includes(k)).map(([k,v])=>`<div class="card"><div class="metric">${v}</div><div>${labels(k)}</div></div>`).join(''); }
 function selectedAttr(optionValue, value){ return String(optionValue) === String(value) ? 'selected' : ''; }
+
 function inputFor(field, table, value = ''){
-  const req = (requiredFields[table] || []).includes(field) ? 'required' : ''; const safeValue = escapeHtml(value ?? '');
+  const req = (requiredFields[table] || []).includes(field) ? 'required' : '';
+  const safeValue = escapeHtml(value ?? '');
   if(field==='role') { const selected = String(value || 'user').split(','); return `<fieldset class="role-picker"><legend>Access roles</legend>${['user','manager','hr','admin'].map(o=>`<label class="check-row"><input type="checkbox" name="roles" value="${o}" ${selected.includes(o) ? 'checked' : ''}> ${labels(o)}</label>`).join('')}</fieldset>`; }
   if(field==='team_id') return `<select name="team_id"><option value="">No team</option>${teams.map(t=>`<option value="${t.id}" ${selectedAttr(t.id, value)}>${escapeHtml(t.name)}</option>`).join('')}</select>`;
   if(field==='manager_id'||field==='employee_id'||field==='owner_employee_id'||field==='assigned_employee_id') return `<select name="${field}" ${req}><option value="">Select employee</option>${employees.map(e=>`<option value="${e.id}" ${selectedAttr(e.id, value)}>${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}</option>`).join('')}</select>`;
@@ -75,42 +88,92 @@ function inputFor(field, table, value = ''){
   if(['description','bio','objective','notes','learning_actions','development_goal'].includes(field)) return `<textarea name="${field}" placeholder="${labels(field)}" ${req}>${safeValue}</textarea>`;
   return `<input name="${field}" value="${safeValue}" placeholder="${labels(field)}" ${req}/>`;
 }
+
 async function loadTable(table){
-  await refreshLookups(); const rows = await api(`/api/${table}`); renderForm(table);
+  await refreshLookups();
+  const rows = await api(`/api/${table}`);
+  renderForm(table);
   if (table === 'tasks') { renderKanban(rows); return; }
   const th = ['id', ...configs[table].filter(f => !(table==='users' && f==='password'))];
   $(`${table}Table`).innerHTML = `<thead><tr>${th.map(h=>`<th>${labels(h)}</th>`).join('')}<th>Actions</th></tr></thead><tbody>${rows.map(r=>`<tr class="${editing?.table === table && editing?.row.id === r.id ? 'editing-row' : ''}">${th.map(h=>`<td>${displayValue(h, r[h])}</td>`).join('')}<td class="actions-cell">${canEdit(table) ? `<button class="ghost" onclick="startEdit('${table}','${encodeURIComponent(JSON.stringify(r))}')">Edit</button>` : ''}${canDelete() ? `<button class="danger" onclick="deleteRow('${table}',${r.id})">Delete</button>` : ''}</td></tr>`).join('')}</tbody>`;
 }
+
 function renderForm(table, row = null){
-  const formId = `${table}Form`; if(!canCreate(table) && !row){ $(formId).innerHTML = '<p class="muted">You can view this section, but your role cannot add new records here.</p>'; return; }
-  const isEditing = !!row; editing = row ? { table, row } : null;
+  const formId = `${table}Form`;
+  if(!canCreate(table) && !row){ $(formId).innerHTML = '<p class="muted">You can view this section, but your role cannot add new records here.</p>'; return; }
+  const isEditing = !!row;
+  editing = row ? { table, row } : null;
   $(formId).innerHTML = `<form class="form" onsubmit="${isEditing ? `updateRow(event,'${table}',${row.id})` : `createRow(event,'${table}')`}"><h3 class="form-title">${isEditing ? `Edit ${labels(table)} #${row.id}` : `Add ${labels(table)}`}</h3>${configs[table].map(f=>inputFor(f, table, row?.[f] ?? '')).join('')}<button>${isEditing ? 'Save changes' : `Add ${labels(table)}`}</button>${isEditing ? `<button class="ghost" type="button" onclick="cancelEdit('${table}')">Cancel</button>` : ''}</form>`;
 }
+
 function startEdit(table, encodedRow){ renderForm(table, JSON.parse(decodeURIComponent(encodedRow))); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 function cancelEdit(table){ editing = null; renderForm(table); loadTable(table); }
-function displayValue(field, value){ if(value == null) return ''; if(['employee_id','manager_id','owner_employee_id','assigned_employee_id'].includes(field)) { const e = employees.find(x=>String(x.id)===String(value)); return e ? `${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}` : value; } if(field==='team_id') { const t = teams.find(x=>String(x.id)===String(value)); return t ? escapeHtml(t.name) : value; } if(field==='project_id') { const p = projects.find(x=>String(x.id)===String(value)); return p ? escapeHtml(p.name) : value; } return escapeHtml(String(value)); }
+
+function displayValue(field, value){
+  if(value == null) return '';
+  if(['employee_id','manager_id','owner_employee_id','assigned_employee_id'].includes(field)) { const e = employees.find(x=>String(x.id)===String(value)); return e ? `${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}` : value; }
+  if(field==='team_id') { const t = teams.find(x=>String(x.id)===String(value)); return t ? escapeHtml(t.name) : value; }
+  if(field==='project_id') { const p = projects.find(x=>String(x.id)===String(value)); return p ? escapeHtml(p.name) : value; }
+  return escapeHtml(String(value));
+}
+
 function formData(form){ const fd = new FormData(form); const data = Object.fromEntries(fd.entries()); if (fd.getAll('roles').length) data.roles = fd.getAll('roles'); return data; }
 function formDataWithoutBlanks(form){ const data = formData(form); Object.keys(data).forEach(k=>{if(data[k]==='') delete data[k]}); return data; }
 function formDataForUpdate(form){ const data = formData(form); Object.keys(data).forEach(k=>{if(data[k]==='') data[k] = null}); return data; }
 async function createRow(e, table){ e.preventDefault(); try { await api(`/api/${table}`, {method:'POST', body:JSON.stringify(formDataWithoutBlanks(e.target))}); e.target.reset(); editing = null; await loadTable(table); } catch(err) { alert(err.message); } }
 async function updateRow(e, table, id){ e.preventDefault(); try { await api(`/api/${table}/${id}`, {method:'PUT', body:JSON.stringify(formDataForUpdate(e.target))}); editing = null; await loadTable(table); } catch(err) { alert(err.message); } }
 async function deleteRow(table,id){ if(confirm('Delete this record?')){ try{ await api(`/api/${table}/${id}`,{method:'DELETE'}); await loadTable(table); }catch(e){ alert(e.message); } } }
+
 function taskStatusOptions(){ return settings.taskStatuses || ['Not started','In progress','Done','On hold']; }
+
 function renderSettings(){
-  const theme = settings.theme || {}; const tabs = {...defaultTabs, ...(settings.tabs || {})};
+  const theme = settings.theme || {};
+  const tabs = {...defaultTabs, ...(settings.tabs || {})};
   const selectedCards = settings.dashboardCards || ['employees','teams','openActions','developmentPlans','projects','openTasks'];
   const dashboardOptions = ['employees','teams','openActions','developmentPlans','projects','openTasks'];
   const statuses = taskStatusOptions();
   $('settingsForm').innerHTML = `<form class="form" onsubmit="saveSettings(event)"><h3 class="form-title">Theme colors</h3>${['brand','brandDark','accent','bg','ink'].map(k=>`<label>${labels(k)}<input type="color" name="theme.${k}" value="${theme[k] || {brand:'#7c3aed',brandDark:'#5b21b6',accent:'#c084fc',bg:'#f7f2ff',ink:'#24113f'}[k]}"></label>`).join('')}<h3 class="form-title">Dashboard cards</h3>${dashboardOptions.map(k=>`<label class="check-row"><input type="checkbox" name="dashboardCards" value="${k}" ${selectedCards.includes(k) ? 'checked' : ''}> ${labels(k)}</label>`).join('')}<h3 class="form-title">Task statuses</h3><p class="muted form-title">One status per line. These become Kanban columns.</p><textarea name="taskStatuses" class="settings-textarea">${escapeHtml(statuses.join('\n'))}</textarea><h3 class="form-title">Tab names</h3>${Object.keys(defaultTabs).map(k=>`<input name="tabs.${k}" value="${escapeHtml(tabs[k])}" placeholder="${escapeHtml(defaultTabs[k])}">`).join('')}<button>Save website settings</button></form>`;
 }
-async function saveSettings(e){ e.preventDefault(); const data = Object.fromEntries(new FormData(e.target).entries()); const theme = {}, tabs = {}; Object.entries(data).forEach(([k,v]) => { if(k.startsWith('theme.')) theme[k.slice(6)] = v; if(k.startsWith('tabs.')) tabs[k.slice(5)] = v; }); const dashboardCards = [...e.target.querySelectorAll('input[name="dashboardCards"]:checked')].map(input => input.value); const taskStatuses = (data.taskStatuses || '').split('\n').map(s=>s.trim()).filter(Boolean); await api('/api/settings', {method:'PUT', body:JSON.stringify({theme,tabs,dashboardCards,taskStatuses})}); settings = {...settings, theme, tabs, dashboardCards, taskStatuses}; applyTheme(); renderNav(); show(activePage); alert('Website settings saved.'); }
-async function importEmployees(){ const file = $('employeeImportFile').files[0]; if(!file) return alert('Choose an Excel or CSV file first.'); const fd = new FormData(); fd.append('file', file); try { const result = await api('/api/import/employees', { method:'POST', body: fd }); $('importResult').textContent = `Created: ${result.created}\nUpdated: ${result.updated}\nSkipped: ${result.skipped}\n${(result.errors || []).join('\n')}`; await refreshLookups(); await loadTable('employees'); } catch(e) { alert(e.message); } }
-async function loadDirectory(){ const q = encodeURIComponent($('search')?.value || ''); const rows = await api(`/api/people-directory?q=${q}`); $('directoryRows').innerHTML = rows.map(e=>`<div class="person-card">${e.photo_url ? `<img class="avatar" src="${escapeHtml(e.photo_url)}" alt="${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}">` : ''}<h3>${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}</h3><p>${escapeHtml(e.title||'')}<br><span class="muted">${escapeHtml(e.team_name||'No team')} · ${escapeHtml(e.location||'')}</span></p><p>${(e.skills||'').split(',').filter(Boolean).map(s=>`<span class="tag">${escapeHtml(s.trim())}</span>`).join('')}</p><button onclick="talentMemo(${e.id})">Generate talent memo</button><pre id="memo-${e.id}"></pre></div>`).join(''); }
+
+async function saveSettings(e){
+  e.preventDefault();
+  const data = Object.fromEntries(new FormData(e.target).entries());
+  const theme = {}, tabs = {};
+  Object.entries(data).forEach(([k,v]) => { if(k.startsWith('theme.')) theme[k.slice(6)] = v; if(k.startsWith('tabs.')) tabs[k.slice(5)] = v; });
+  const dashboardCards = [...e.target.querySelectorAll('input[name="dashboardCards"]:checked')].map(input => input.value);
+  const taskStatuses = (data.taskStatuses || '').split('\n').map(s=>s.trim()).filter(Boolean);
+  await api('/api/settings', {method:'PUT', body:JSON.stringify({theme,tabs,dashboardCards,taskStatuses})});
+  settings = {...settings, theme, tabs, dashboardCards, taskStatuses};
+  applyTheme();
+  renderNav();
+  show(activePage);
+  alert('Website settings saved.');
+}
+
+async function importEmployees(){
+  const file = $('employeeImportFile').files[0];
+  if(!file) return alert('Choose an Excel or CSV file first.');
+  const fd = new FormData();
+  fd.append('file', file);
+  try {
+    const result = await api('/api/import/employees', { method:'POST', body: fd });
+    $('importResult').textContent = `Created: ${result.created}\nUpdated: ${result.updated}\nSkipped: ${result.skipped}\n${(result.errors || []).join('\n')}`;
+    await refreshLookups();
+    await loadTable('employees');
+  } catch(e) { alert(e.message); }
+}
+
+async function loadDirectory(){
+  const q = encodeURIComponent($('search')?.value || '');
+  const rows = await api(`/api/people-directory?q=${q}`);
+  $('directoryRows').innerHTML = rows.map(e=>`<div class="person-card">${e.photo_url ? `<img class="avatar" src="${escapeHtml(e.photo_url)}" alt="${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}">` : ''}<h3>${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}</h3><p>${escapeHtml(e.title||'')}<br><span class="muted">${escapeHtml(e.team_name||'No team')} · ${escapeHtml(e.location||'')}</span></p><p>${(e.skills||'').split(',').filter(Boolean).map(s=>`<span class="tag">${escapeHtml(s.trim())}</span>`).join('')}</p><button onclick="talentMemo(${e.id})">Generate talent memo</button><pre id="memo-${e.id}"></pre></div>`).join('');
+}
 
 async function loadHrInfo(){
   const rows = await api('/api/hr-info');
   $('hrRows').innerHTML = rows.map(r => `<div class="card"><h3>${escapeHtml(r.first_name)} ${escapeHtml(r.last_name)}</h3><form class="form compact-form" onsubmit="saveHrInfo(event,${r.employee_id})"><input name="salary" type="number" step="0.01" value="${escapeHtml(r.salary ?? '')}" placeholder="Salary"><input name="bonus" type="number" step="0.01" value="${escapeHtml(r.bonus ?? '')}" placeholder="Bonus"><input name="visa_status" value="${escapeHtml(r.visa_status ?? '')}" placeholder="Visa status"><input name="visa_expiry_date" type="date" value="${escapeHtml(r.visa_expiry_date ?? '')}"><input name="job_grade" value="${escapeHtml(r.job_grade ?? '')}" placeholder="Job grade"><input name="birthday" type="date" value="${escapeHtml(r.birthday ?? '')}"><input name="salary_effective_date" type="date" placeholder="Salary effective date"><input name="salary_notes" placeholder="Salary change notes"><button>Save HR info</button><button class="ghost" type="button" onclick="loadSalaryHistory(${r.employee_id})">Salary history</button></form><pre id="salary-history-${r.employee_id}"></pre></div>`).join('');
 }
+
 async function saveHrInfo(e, employeeId){ e.preventDefault(); try { await api(`/api/hr-info/${employeeId}`, {method:'PUT', body:JSON.stringify(formDataForUpdate(e.target))}); await loadHrInfo(); } catch(err) { alert(err.message); } }
 async function loadSalaryHistory(employeeId){ const rows = await api(`/api/hr-info/${employeeId}/salary-history`); $(`salary-history-${employeeId}`).textContent = rows.map(r => `${r.effective_date || 'No date'}: ${r.salary} ${r.notes || ''}`).join('\n') || 'No salary history yet.'; }
 
@@ -120,13 +183,27 @@ function renderKanban(rows){
   rows.forEach(row => (byStatus[row.status] ||= []).push(row));
   $('tasksBoard').innerHTML = statuses.map(status => `<section class="kanban-column" ondragover="allowDrop(event)" ondrop="dropTask(event,'${escapeAttr(status)}')"><h3>${escapeHtml(status)} <span>${(byStatus[status] || []).length}</span></h3>${(byStatus[status] || []).map(task => `<article class="kanban-card" draggable="${canEdit('tasks')}" ondragstart="dragTask(event,${task.id})"><strong>${escapeHtml(task.title)}</strong><p>${escapeHtml(task.description || '')}</p><small>${displayValue('assigned_employee_id', task.assigned_employee_id)}${task.due_date ? ` · Due ${escapeHtml(task.due_date)}` : ''}</small><div class="actions-cell">${canEdit('tasks') ? `<button class="ghost" onclick="startEdit('tasks','${encodeURIComponent(JSON.stringify(task))}')">Edit</button>` : ''}${canDelete() ? `<button class="danger" onclick="deleteRow('tasks',${task.id})">Delete</button>` : ''}</div></article>`).join('')}</section>`).join('');
 }
+
 function allowDrop(event){ event.preventDefault(); }
 function dragTask(event, id){ event.dataTransfer.setData('text/plain', String(id)); }
 async function dropTask(event, status){ event.preventDefault(); const id = event.dataTransfer.getData('text/plain'); if(!id) return; try { await api(`/api/tasks/${id}/status`, {method:'PUT', body:JSON.stringify({status})}); await loadTable('tasks'); } catch(err) { alert(err.message); } }
-async function loadAudit(){ const rows = await api('/api/audit-logs'); $('auditRows').innerHTML = `<table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>Details</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(r.created_at)}</td><td>${escapeHtml(r.user_email || '')}</td><td>${escapeHtml(r.action)}</td><td>${escapeHtml(r.target_type || '')} ${escapeHtml(r.target_id || '')}</td><td><pre>${escapeHtml(r.details || '')}</pre></td></tr>`).join('')}</tbody></table>`; }
+
+async function loadAudit(){
+  const rows = await api('/api/audit-logs');
+  $('auditRows').innerHTML = `<table><thead><tr><th>Time</th><th>User</th><th>Action</th><th>Target</th><th>Details</th></tr></thead><tbody>${rows.map(r=>`<tr><td>${escapeHtml(r.created_at)}</td><td>${escapeHtml(r.user_email || '')}</td><td>${escapeHtml(r.action)}</td><td>${escapeHtml(r.target_type || '')} ${escapeHtml(r.target_id || '')}</td><td><pre>${escapeHtml(r.details || '')}</pre></td></tr>`).join('')}</tbody></table>`;
+}
 
 async function talentMemo(id){ const r = await api(`/api/ai/talent-memo/${id}`,{method:'POST'}); $(`memo-${id}`).textContent = r.memo; }
-async function loadOrg(){ const rows = await api('/api/org-chart'); const byManager = {}; rows.forEach(r => { const key = r.manager_id || 'root'; (byManager[key] ||= []).push(r); }); const render = parent => `<ul>${(byManager[parent]||[]).map(e=>`<li><div class="org-node"><strong>${escapeHtml(e.name)}</strong><span>${escapeHtml(e.title||'')}</span><small>${escapeHtml(e.team||'')}</small></div>${render(e.id)}</li>`).join('')}</ul>`; $('orgChart').innerHTML = render('root'); }
+
+async function loadOrg(){
+  const rows = await api('/api/org-chart');
+  const byManager = {};
+  rows.forEach(r => { const key = r.manager_id || 'root'; (byManager[key] ||= []).push(r); });
+  const render = parent => `<ul>${(byManager[parent]||[]).map(e=>`<li><div class="org-node"><strong>${escapeHtml(e.name)}</strong><span>${escapeHtml(e.title||'')}</span><small>${escapeHtml(e.team||'')}</small></div>${render(e.id)}</li>`).join('')}</ul>`;
+  $('orgChart').innerHTML = render('root');
+}
+
 function escapeAttr(s){ return String(s).replace(/['\\]/g, '\\$&'); }
 function escapeHtml(s){ return String(s).replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c])); }
+
 boot().catch(e => alert(e.message));
