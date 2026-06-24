@@ -47,7 +47,8 @@ async function ensureColumn(table, column, definition) {
 async function seedDefaultSettings() {
   const defaults = {
     theme: JSON.stringify({ brand:'#7c3aed', brandDark:'#5b21b6', accent:'#c084fc', bg:'#f7f2ff', ink:'#24113f' }),
-    tabs: JSON.stringify({ dashboard:'Dashboard', directory:'People Directory', teams:'Teams', employees:'Employees', projects:'Projects', tasks:'Tasks', achievements:'Achievements', progression:'Career Progression', actions:'Talent Action Plan', development:'Talent Development', org:'Org Chart', settings:'Settings', users:'Users' })
+    tabs: JSON.stringify({ dashboard:'Dashboard', directory:'People Directory', teams:'Teams', employees:'Employees', projects:'Projects', tasks:'Tasks', achievements:'Achievements', progression:'Career Progression', actions:'Talent Action Plan', development:'Talent Development', org:'Org Chart', hr:'HR Secure Info', settings:'Settings', users:'Users' }),
+    dashboardCards: JSON.stringify(['employees','teams','openActions','developmentPlans','projects','openTasks'])
   };
   for (const [key, value] of Object.entries(defaults)) {
     await run('INSERT OR IGNORE INTO app_settings (key,value) VALUES (?,?)', [key, value]);
@@ -58,7 +59,9 @@ function requireAdmin(req, res, next) { if (!req.session.user || req.session.use
 function userRole(req) { return req.session.user?.role || 'user'; }
 function isAdmin(req) { return userRole(req) === 'admin'; }
 function isManager(req) { return userRole(req) === 'manager'; }
+function isHr(req) { return userRole(req) === 'hr'; }
 function isUser(req) { return userRole(req) === 'user'; }
+function requireHr(req, res, next) { if (!req.session.user || req.session.user.role !== 'hr') return res.status(403).json({ error: 'HR only' }); next(); }
 async function currentEmployeeId(req) {
   if (req.session.user?.employee_id) return req.session.user.employee_id;
   const employee = await get('SELECT id FROM employees WHERE lower(email)=lower(?)', [req.session.user?.email || '']);
@@ -75,15 +78,18 @@ function placeholders(values) { return values.map(() => '?').join(','); }
 async function initDb() {
   await run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, email TEXT UNIQUE, role TEXT DEFAULT 'admin', employee_id INTEGER, password_hash TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id))`);
   await run(`CREATE TABLE IF NOT EXISTS teams (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP)`);
-  await run(`CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT NOT NULL, last_name TEXT NOT NULL, title TEXT, email TEXT UNIQUE, location TEXT, manager_id INTEGER, team_id INTEGER, start_date TEXT, level TEXT, status TEXT DEFAULT 'Active', skills TEXT, bio TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(manager_id) REFERENCES employees(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY AUTOINCREMENT, first_name TEXT NOT NULL, last_name TEXT NOT NULL, title TEXT, email TEXT UNIQUE, location TEXT, manager_id INTEGER, team_id INTEGER, start_date TEXT, level TEXT, status TEXT DEFAULT 'Active', skills TEXT, bio TEXT, photo_url TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(team_id) REFERENCES teams(id), FOREIGN KEY(manager_id) REFERENCES employees(id))`);
   await run(`CREATE TABLE IF NOT EXISTS achievements (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, description TEXT, achievement_date TEXT, category TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS career_progression (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, from_role TEXT, to_role TEXT, progression_date TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS action_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, title TEXT NOT NULL, objective TEXT, owner TEXT, due_date TEXT, status TEXT DEFAULT 'Open', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS development_plans (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, skill_area TEXT NOT NULL, development_goal TEXT, learning_actions TEXT, target_date TEXT, status TEXT DEFAULT 'In progress', created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS projects (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT, owner_employee_id INTEGER, team_id INTEGER, status TEXT DEFAULT 'Planning', start_date TEXT, end_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(owner_employee_id) REFERENCES employees(id), FOREIGN KEY(team_id) REFERENCES teams(id))`);
+  await run(`CREATE TABLE IF NOT EXISTS employee_private_info (employee_id INTEGER PRIMARY KEY, salary REAL, bonus REAL, visa_status TEXT, visa_expiry_date TEXT, job_grade TEXT, birthday TEXT, updated_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
+  await run(`CREATE TABLE IF NOT EXISTS salary_history (id INTEGER PRIMARY KEY AUTOINCREMENT, employee_id INTEGER NOT NULL, salary REAL NOT NULL, effective_date TEXT, notes TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE)`);
   await run(`CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)`);
   await run(`CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, project_id INTEGER, assigned_employee_id INTEGER, title TEXT NOT NULL, description TEXT, status TEXT DEFAULT 'Open', priority TEXT DEFAULT 'Medium', due_date TEXT, created_at TEXT DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE SET NULL, FOREIGN KEY(assigned_employee_id) REFERENCES employees(id) ON DELETE SET NULL)`);
   await ensureColumn('users', 'employee_id', 'INTEGER');
+  await ensureColumn('employees', 'photo_url', 'TEXT');
   await seedDefaultSettings();
   const adminEmail = process.env.ADMIN_EMAIL || 'carlota.moron.ortiz@h-partners.com';
   const adminPassword = process.env.ADMIN_PASSWORD || 'CHANGE_ME_IN_RENDER';
@@ -122,7 +128,7 @@ app.get('/api/dashboard', requireAuth, async (req,res)=>{
 });
 
 async function scopedRows(req, table) {
-  if (isAdmin(req)) return all(`SELECT * FROM ${table} ORDER BY id DESC`);
+  if (isAdmin(req) || isHr(req)) return all(`SELECT * FROM ${table} ORDER BY id DESC`);
   const selfId = await currentEmployeeId(req);
   const managed = isManager(req) ? await managedEmployeeIds(req) : [];
   const allowed = [...new Set([selfId, ...managed].filter(Boolean))];
@@ -135,7 +141,7 @@ async function scopedRows(req, table) {
   return [];
 }
 async function canWrite(req, table, body, id=null) {
-  if (isAdmin(req)) return true;
+  if (isAdmin(req) || isHr(req)) return true;
   const selfId = await currentEmployeeId(req);
   const managed = isManager(req) ? await managedEmployeeIds(req) : [];
   const current = id ? await get(`SELECT * FROM ${table} WHERE id=?`, [id]) : null;
@@ -152,7 +158,7 @@ function crud(table, fields) {
   app.delete(`/api/${table}/:id`, requireAdmin, async (req,res)=>{ await run(`DELETE FROM ${table} WHERE id=?`, [req.params.id]); res.json({ ok:true }); });
 }
 crud('teams', ['name','description']);
-crud('employees', ['first_name','last_name','title','email','location','manager_id','team_id','start_date','level','status','skills','bio']);
+crud('employees', ['first_name','last_name','title','email','location','manager_id','team_id','start_date','level','status','skills','bio','photo_url']);
 crud('achievements', ['employee_id','title','description','achievement_date','category']);
 crud('career_progression', ['employee_id','from_role','to_role','progression_date','notes']);
 crud('action_plans', ['employee_id','title','objective','owner','due_date','status']);
@@ -160,13 +166,39 @@ crud('development_plans', ['employee_id','skill_area','development_goal','learni
 crud('projects', ['name','description','owner_employee_id','team_id','status','start_date','end_date']);
 crud('tasks', ['project_id','assigned_employee_id','title','description','status','priority','due_date']);
 
-
 app.get('/api/settings', requireAuth, async (req,res)=>{ const rows = await all('SELECT key,value FROM app_settings'); res.json(Object.fromEntries(rows.map(r => [r.key, JSON.parse(r.value)]))); });
-app.put('/api/settings', requireAdmin, async (req,res)=>{ for (const key of ['theme','tabs']) if (req.body[key]) await run('INSERT OR REPLACE INTO app_settings (key,value) VALUES (?,?)', [key, JSON.stringify(req.body[key])]); res.json({ ok:true }); });
+app.put('/api/settings', requireAdmin, async (req,res)=>{ for (const key of ['theme','tabs','dashboardCards']) if (req.body[key]) await run('INSERT OR REPLACE INTO app_settings (key,value) VALUES (?,?)', [key, JSON.stringify(req.body[key])]); res.json({ ok:true }); });
 app.get('/api/users', requireAdmin, async (req,res)=> res.json(await all('SELECT id,name,email,role,employee_id,created_at FROM users ORDER BY id DESC')));
 app.post('/api/users', requireAdmin, async (req,res)=>{ const {name,email,role='user',employee_id,password='ChangeMe123!'} = req.body; const r = await run('INSERT INTO users (name,email,role,employee_id,password_hash) VALUES (?,?,?,?,?)', [name,email,role,employee_id || null,hashPassword(password)]); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [r.lastID])); });
 app.put('/api/users/:id', requireAdmin, async (req,res)=>{ const {name,email,role,employee_id,password} = req.body; const cols = ['name','email','role','employee_id'].filter(f => req.body[f] !== undefined); const vals = cols.map(f => f === 'employee_id' && req.body[f] === '' ? null : req.body[f]); if (password) { cols.push('password_hash'); vals.push(hashPassword(password)); } await run(`UPDATE users SET ${cols.map(f=>`${f}=?`).join(',')} WHERE id=?`, [...vals, req.params.id]); res.json(await get('SELECT id,name,email,role,employee_id,created_at FROM users WHERE id=?', [req.params.id])); });
 app.delete('/api/users/:id', requireAdmin, async (req,res)=>{ await run('DELETE FROM users WHERE id=?', [req.params.id]); res.json({ ok:true }); });
+
+app.get('/api/hr-info', requireHr, async (req,res)=>{
+  res.json(await all(`SELECT e.id AS employee_id, e.first_name, e.last_name, e.email, e.title, h.salary, h.bonus, h.visa_status, h.visa_expiry_date, h.job_grade, h.birthday, h.updated_at
+    FROM employees e LEFT JOIN employee_private_info h ON h.employee_id=e.id ORDER BY e.last_name, e.first_name`));
+});
+app.put('/api/hr-info/:employeeId', requireHr, async (req,res)=>{
+  const employeeId = req.params.employeeId;
+  const before = await get('SELECT salary FROM employee_private_info WHERE employee_id=?', [employeeId]);
+  const values = {
+    salary:req.body.salary ?? null,
+    bonus:req.body.bonus ?? null,
+    visa_status:req.body.visa_status ?? null,
+    visa_expiry_date:req.body.visa_expiry_date ?? null,
+    job_grade:req.body.job_grade ?? null,
+    birthday:req.body.birthday ?? null
+  };
+  await run(`INSERT INTO employee_private_info (employee_id,salary,bonus,visa_status,visa_expiry_date,job_grade,birthday,updated_at)
+    VALUES (?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+    ON CONFLICT(employee_id) DO UPDATE SET salary=excluded.salary, bonus=excluded.bonus, visa_status=excluded.visa_status, visa_expiry_date=excluded.visa_expiry_date, job_grade=excluded.job_grade, birthday=excluded.birthday, updated_at=CURRENT_TIMESTAMP`,
+    [employeeId, values.salary, values.bonus, values.visa_status, values.visa_expiry_date, values.job_grade, values.birthday]);
+  if (values.salary !== null && Number(values.salary) !== Number(before?.salary)) {
+    await run('INSERT INTO salary_history (employee_id,salary,effective_date,notes) VALUES (?,?,?,?)', [employeeId, values.salary, req.body.salary_effective_date || new Date().toISOString().slice(0,10), req.body.salary_notes || 'Salary updated']);
+  }
+  res.json(await get('SELECT * FROM employee_private_info WHERE employee_id=?', [employeeId]));
+});
+app.get('/api/hr-info/:employeeId/salary-history', requireHr, async (req,res)=> res.json(await all('SELECT * FROM salary_history WHERE employee_id=? ORDER BY effective_date DESC, id DESC', [req.params.employeeId])));
+app.post('/api/hr-info/:employeeId/salary-history', requireHr, async (req,res)=>{ const r = await run('INSERT INTO salary_history (employee_id,salary,effective_date,notes) VALUES (?,?,?,?)', [req.params.employeeId, req.body.salary, req.body.effective_date, req.body.notes]); res.json(await get('SELECT * FROM salary_history WHERE id=?', [r.lastID])); });
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
 
