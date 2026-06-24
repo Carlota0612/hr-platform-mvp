@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 
 const api = async (url, opts = {}) => {
   const headers = opts.body instanceof FormData ? {} : {'Content-Type': 'application/json'};
+  if (!['GET', 'HEAD'].includes((opts.method || 'GET').toUpperCase()) && currentUser?.csrfToken) headers['X-CSRF-Token'] = currentUser.csrfToken;
   const r = await fetch(url, {...opts, headers: {...headers, ...(opts.headers || {})}});
   const text = await r.text();
   let data = {};
@@ -32,13 +33,16 @@ async function boot(){
   $('login').classList.toggle('hidden', !!currentUser); $('app').classList.toggle('hidden', !currentUser);
   if(currentUser){ settings = {...settings, ...(await api('/api/settings'))}; applyTheme(); renderNav(); await refreshLookups(); show('dashboard'); }
 }
-function role(){ return currentUser?.role || 'user'; }
-function isAdmin(){ return role() === 'admin'; }
-function isHr(){ return role() === 'hr'; }
+function roles(){ return currentUser?.roles || (currentUser?.role ? String(currentUser.role).split(',') : ['user']); }
+function role(){ return currentUser?.role || roles()[0] || 'user'; }
+function hasRole(name){ return roles().includes(name); }
+function isAdmin(){ return hasRole('admin'); }
+function isHr(){ return hasRole('hr') || isAdmin(); }
+function isManager(){ return hasRole('manager'); }
 function allowedPages(){ return navPages.filter(p => isAdmin() || isHr() || !['settings','users','teams','projects','hr'].includes(p)); }
-function canCreate(table){ return isAdmin() || isHr() || (role()==='manager' && ['tasks','action_plans','development_plans','achievements'].includes(table)); }
-function canEdit(table){ return isAdmin() || isHr() || (role()==='user' && ['tasks','employees'].includes(table)) || (role()==='manager' && ['tasks','action_plans','development_plans','achievements'].includes(table)); }
-function canDelete(){ return isAdmin() || isHr(); }
+function canCreate(table){ return isAdmin() || isHr() || (isManager() && ['tasks','action_plans','development_plans','achievements'].includes(table)); }
+function canEdit(table){ return isAdmin() || isHr() || (hasRole('user') && ['tasks','employees'].includes(table)) || (isManager() && ['tasks','action_plans','development_plans','achievements'].includes(table)); }
+function canDelete(){ return isAdmin(); }
 function tabName(id){ return settings.tabs?.[id] || defaultTabs[id] || labels(id); }
 function applyTheme(){ Object.entries(settings.theme || {}).forEach(([k,v]) => document.documentElement.style.setProperty(`--${k.replace(/[A-Z]/g, m => '-' + m.toLowerCase())}`, v)); }
 function renderNav(){ $('navMenu').innerHTML = allowedPages().map(id => `<button onclick="show('${id}')">${escapeHtml(tabName(id))}</button>`).join('') + '<button onclick="logout()" class="secondary">Logout</button>'; }
@@ -59,7 +63,7 @@ async function loadDashboard(){ const d = await api('/api/dashboard'); const sel
 function selectedAttr(optionValue, value){ return String(optionValue) === String(value) ? 'selected' : ''; }
 function inputFor(field, table, value = ''){
   const req = (requiredFields[table] || []).includes(field) ? 'required' : ''; const safeValue = escapeHtml(value ?? '');
-  if(field==='role') return `<select name="role" ${req}>${['user','manager','hr','admin'].map(o=>`<option ${selectedAttr(o,value)}>${o}</option>`).join('')}</select>`;
+  if(field==='role') { const selected = String(value || 'user').split(','); return `<fieldset class="role-picker"><legend>Access roles</legend>${['user','manager','hr','admin'].map(o=>`<label class="check-row"><input type="checkbox" name="roles" value="${o}" ${selected.includes(o) ? 'checked' : ''}> ${labels(o)}</label>`).join('')}</fieldset>`; }
   if(field==='team_id') return `<select name="team_id"><option value="">No team</option>${teams.map(t=>`<option value="${t.id}" ${selectedAttr(t.id, value)}>${escapeHtml(t.name)}</option>`).join('')}</select>`;
   if(field==='manager_id'||field==='employee_id'||field==='owner_employee_id'||field==='assigned_employee_id') return `<select name="${field}" ${req}><option value="">Select employee</option>${employees.map(e=>`<option value="${e.id}" ${selectedAttr(e.id, value)}>${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}</option>`).join('')}</select>`;
   if(field==='project_id') return `<select name="project_id"><option value="">No project</option>${projects.map(p=>`<option value="${p.id}" ${selectedAttr(p.id, value)}>${escapeHtml(p.name)}</option>`).join('')}</select>`;
@@ -84,8 +88,9 @@ function renderForm(table, row = null){
 function startEdit(table, encodedRow){ renderForm(table, JSON.parse(decodeURIComponent(encodedRow))); window.scrollTo({ top: 0, behavior: 'smooth' }); }
 function cancelEdit(table){ editing = null; renderForm(table); loadTable(table); }
 function displayValue(field, value){ if(value == null) return ''; if(['employee_id','manager_id','owner_employee_id','assigned_employee_id'].includes(field)) { const e = employees.find(x=>String(x.id)===String(value)); return e ? `${escapeHtml(e.first_name)} ${escapeHtml(e.last_name)}` : value; } if(field==='team_id') { const t = teams.find(x=>String(x.id)===String(value)); return t ? escapeHtml(t.name) : value; } if(field==='project_id') { const p = projects.find(x=>String(x.id)===String(value)); return p ? escapeHtml(p.name) : value; } return escapeHtml(String(value)); }
-function formDataWithoutBlanks(form){ const data = Object.fromEntries(new FormData(form).entries()); Object.keys(data).forEach(k=>{if(data[k]==='') delete data[k]}); return data; }
-function formDataForUpdate(form){ const data = Object.fromEntries(new FormData(form).entries()); Object.keys(data).forEach(k=>{if(data[k]==='') data[k] = null}); return data; }
+function formData(form){ const fd = new FormData(form); const data = Object.fromEntries(fd.entries()); if (fd.getAll('roles').length) data.roles = fd.getAll('roles'); return data; }
+function formDataWithoutBlanks(form){ const data = formData(form); Object.keys(data).forEach(k=>{if(data[k]==='') delete data[k]}); return data; }
+function formDataForUpdate(form){ const data = formData(form); Object.keys(data).forEach(k=>{if(data[k]==='') data[k] = null}); return data; }
 async function createRow(e, table){ e.preventDefault(); try { await api(`/api/${table}`, {method:'POST', body:JSON.stringify(formDataWithoutBlanks(e.target))}); e.target.reset(); editing = null; await loadTable(table); } catch(err) { alert(err.message); } }
 async function updateRow(e, table, id){ e.preventDefault(); try { await api(`/api/${table}/${id}`, {method:'PUT', body:JSON.stringify(formDataForUpdate(e.target))}); editing = null; await loadTable(table); } catch(err) { alert(err.message); } }
 async function deleteRow(table,id){ if(confirm('Delete this record?')){ try{ await api(`/api/${table}/${id}`,{method:'DELETE'}); await loadTable(table); }catch(e){ alert(e.message); } } }
