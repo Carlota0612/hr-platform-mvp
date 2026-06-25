@@ -16,7 +16,7 @@ Default login:
 - Email: `admin@example.com`
 - Password: `admin123`
 
-Change these in Render environment variables before using real data.
+Change these in Render environment variables before using real data. Keep `HR_ENCRYPTION_KEY` stable after launch because it is used to decrypt private HR fields.
 
 ## Deploy on Render
 
@@ -28,6 +28,7 @@ Change these in Render environment variables before using real data.
 4. Add environment variables:
    - `NODE_ENV=production`
    - `SESSION_SECRET=<a long random value>`
+   - `HR_ENCRYPTION_KEY=<a long random value>`
    - `ADMIN_EMAIL=<your admin email>`
    - `ADMIN_PASSWORD=<your strong password>`
 5. Deploy.
