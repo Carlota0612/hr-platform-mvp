@@ -20,6 +20,18 @@ npm run generate-secrets
 
 Copy the printed values into Render. Keep `HR_ENCRYPTION_KEY` stable after launch. It encrypts HR private data; changing it later means previously encrypted HR data cannot be decrypted.
 
+## Add `HR_ENCRYPTION_KEY` to an existing Render service
+
+If the service already exists and is failing with `HR_ENCRYPTION_KEY must be configured in production`, add the variable in the Render dashboard:
+
+1. Open [Render](https://dashboard.render.com/) and sign in.
+2. Click your web service, for example `peopleos-hr-platform`.
+3. In the left menu, click **Environment**.
+4. Click **Add Environment Variable**.
+5. Set **Key** to `HR_ENCRYPTION_KEY`.
+6. Set **Value** to the `HR_ENCRYPTION_KEY=...` value printed by `npm run generate-secrets`. Paste only the part after `HR_ENCRYPTION_KEY=`.
+7. Click **Save Changes**. Render will redeploy the service; if it does not, click **Manual Deploy → Deploy latest commit**.
+
 ## Optional invite email variables
 
 User invites work without email by returning a setup link for admins to copy. To email invites automatically through Resend, also set:
